@@ -9,6 +9,6 @@ set "ROOT=%~dp0"
 set "ROOT=%ROOT:~0,-1%"
 call "%ROOT%\src\scripts\compile.cmd" debug || exit /b 1
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\src\scripts\assemble.ps1" ^
-  -Build "%ROOT%\output\build\debug" -Out "%ROOT%\output\debug\CastlevaniaLoI" -Pdb || exit /b 1
+  -Build "%ROOT%\output\intermediate\debug" -Out "%ROOT%\output\debug\CastlevaniaLoI" -Pdb || exit /b 1
 echo.
 echo Launcher: output\debug\CastlevaniaLoI\CastlevaniaLoI.exe

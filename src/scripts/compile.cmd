@@ -1,9 +1,9 @@
 @echo off
 rem Compiles the translators (eerecomp, vurecomp) and the runner/launcher with the llvm-mingw in tools\.
-rem   compile.cmd debug    output\build\debug: optimized, with debug info (a .pdb beside each binary) and a
+rem   compile.cmd debug    output\intermediate\debug: optimized, with debug info (a .pdb beside each binary) and a
 rem                        console window for the logs; with output\explore\generated (explore.ps1) it also
 rem                        builds the game's code into game.dll there, for exploring and testing
-rem   compile.cmd release  output\build\release: what release.bat ships, without debug info or console
+rem   compile.cmd release  output\intermediate\release: what release.bat ships, without debug info or console
 setlocal
 for %%i in ("%~dp0..\..") do set "ROOT=%%~fi"
 set "TOOLS=%ROOT%\tools"
@@ -13,7 +13,7 @@ if /i "%CFG%"=="release" goto :cfg_ok
 echo usage: compile.cmd debug^|release
 exit /b 2
 :cfg_ok
-set "OUT=%ROOT%\output\build\%CFG%"
+set "OUT=%ROOT%\output\intermediate\%CFG%"
 
 rem Everything external (compiler, CMake, Ninja, libraries, ps2-web-recomp) comes from tools\,
 rem which fetch-tools.ps1 fills on the first build.

@@ -15,7 +15,7 @@ param(
 # redirected, so failures are checked through $LASTEXITCODE instead.
 $ErrorActionPreference = "Continue"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-$build = Join-Path $root "output\build\debug"
+$build = Join-Path $root "output\intermediate\debug"
 $config = Join-Path $root "src\config"
 $entries = Join-Path $config "entries.txt"
 $dev = Join-Path $root "output\explore"

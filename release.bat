@@ -10,7 +10,7 @@ set "VERSION=%~1"
 if "%VERSION%"=="" set "VERSION=dev"
 call "%ROOT%\src\scripts\compile.cmd" release || exit /b 1
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\src\scripts\assemble.ps1" ^
-  -Build "%ROOT%\output\build\release" -Out "%ROOT%\output\release\CastlevaniaLoI" -Clean || exit /b 1
+  -Build "%ROOT%\output\intermediate\release" -Out "%ROOT%\output\release\CastlevaniaLoI" -Clean || exit /b 1
 set "ZIP=%ROOT%\output\release\CastlevaniaLoI-%VERSION%-win64.zip"
 if exist "%ZIP%" del "%ZIP%"
 tar -a -c -f "%ZIP%" -C "%ROOT%\output\release" CastlevaniaLoI || exit /b 1

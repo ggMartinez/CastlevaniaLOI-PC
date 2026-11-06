@@ -143,7 +143,10 @@ int run() {
         ImGui::Begin("##launcher", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
 
         if (!have_config) {
-            ImGui::TextWrapped("This copy of the launcher is incomplete: %s", config_error.c_str());
+            ImGui::TextWrapped("This copy of the launcher is incomplete: %s\n\n"
+                               "Run CastlevaniaLoI.exe from a complete folder: the release zip extracted whole, "
+                               "or, for a developer build, output\\debug\\CastlevaniaLoI (made by build.bat).",
+                               config_error.c_str());
         } else {
             ImGui::SetWindowFontScale(1.5f);
             ImGui::TextUnformatted(config.get("title").c_str());
