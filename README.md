@@ -116,6 +116,7 @@ build.bat
 | Script | What it makes |
 |---|---|
 | `build.bat` | A developer build in `output\debug\CastlevaniaLoI`: optimized, with `.pdb` debug files (Visual Studio and WinDbg show function names and source lines) and a console window with the logs. Rebuilding keeps what testing left there (`game.dll`, saves, settings). |
+| `clean-build.bat` | `build.bat` from nothing, as a fresh clone gets it: deletes `tools\` and `output\` first (game.dll, saves and settings in `output\debug` go too). It stops if `tools\ps2-web-recomp` has changes not saved into the patch. |
 | `release.bat [version]` | A clean build for the Releases page: `output\release\CastlevaniaLoI-<version>-win64.zip`. |
 
 Run `output\debug\CastlevaniaLoI\CastlevaniaLoI.exe` and use the launcher as a player would.
@@ -170,7 +171,8 @@ they are the game's.
 ### Repository layout
 
 ```
-build.bat, release.bat   the two build entry points
+build.bat, clean-build.bat, release.bat
+                         the build entry points
 src\launcher\            the launcher and the game builder (launcher.cpp, builder.cpp)
 src\config\              what the port knows about the disc: hash, entry points, VU1 recipe
 src\patches\             this port's changes to ps2-web-recomp

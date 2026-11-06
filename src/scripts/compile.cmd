@@ -4,6 +4,7 @@ rem   compile.cmd debug    output\intermediate\debug: optimized, with debug info
 rem                        console window for the logs; with output\explore\generated (explore.ps1) it also
 rem                        builds the game's code into game.dll there, for exploring and testing
 rem   compile.cmd release  output\intermediate\release: what release.bat ships, without debug info or console
+rem   compile.cmd debug nogame   as debug, without game.dll
 setlocal
 for %%i in ("%~dp0..\..") do set "ROOT=%%~fi"
 set "TOOLS=%ROOT%\tools"
@@ -32,6 +33,9 @@ if /i "%CFG%"=="debug" (
   set "FLAGS_CXX=-O3 -DNDEBUG"
   set "FLAGS_LINK=-s"
 )
+rem "compile.cmd debug nogame" leaves the game's code out (explore.ps1's first build, which only
+rem needs the translators and the runner).
+if /i "%~2"=="nogame" set "GEN="
 
 cmake -S "%TOOLS%\ps2-web-recomp" -B "%OUT%" -G Ninja %FLAGS% ^
   "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=%FLAGS_CXX%" "-DCMAKE_CXX_FLAGS_RELEASE=%FLAGS_CXX%" ^

@@ -25,13 +25,19 @@ $boot = ((Get-Content (Join-Path $config "game.txt")) -match '^boot=' -replace '
 $elf = Join-Path $dev $boot
 New-Item -ItemType Directory -Force $dev, "$dev\vu1", "$dev\shots", $generated | Out-Null
 
-function Build-Dev {
-    cmd /c "`"$PSScriptRoot\compile.cmd`" debug > `"$dev\build.log`" 2>&1"
+function Build-Dev([string]$Mode = "") {
+    cmd /c "`"$PSScriptRoot\compile.cmd`" debug $Mode > `"$dev\build.log`" 2>&1"
     if ($LASTEXITCODE -ne 0) { Get-Content "$dev\build.log" -Tail 30; throw "build failed (output\explore\build.log)" }
 }
+# The CPU code, then the VU1 microcode in output\explore\vu1 (the same order as the launcher's
+# build): game.dll needs both translations to link.
 function Translate {
     & "$build\eerecomp.exe" $elf --entries $entries --out $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
     if ($LASTEXITCODE -ne 0) { throw "eerecomp failed" }
+    if (Get-ChildItem "$dev\vu1\*.bin" -ErrorAction SilentlyContinue) {
+        & "$build\vurecomp.exe" "$dev\vu1" $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
+        if ($LASTEXITCODE -ne 0) { throw "vurecomp failed" }
+    }
 }
 function Read-Tokens($file) {
     if (-not (Test-Path $file)) { return @() }
@@ -42,7 +48,7 @@ function Read-Tokens($file) {
     }
 }
 
-Build-Dev
+Build-Dev "nogame"   # the translators and the runner; the game's code is translated below
 if (-not (Test-Path $elf)) {
     & $runner --dev-extract (Join-Path $config "game.txt") $Iso $dev 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "cannot take $boot off the disc" }

@@ -373,6 +373,87 @@ index f447223..75b8372 100644
      void *display = nullptr;
      std::uint64_t window = 0;
      void *surface = nullptr;
+diff --git a/runtime/include/ps2/vu_ops.hpp b/runtime/include/ps2/vu_ops.hpp
+index d98afb7..8c50a93 100644
+--- a/runtime/include/ps2/vu_ops.hpp
++++ b/runtime/include/ps2/vu_ops.hpp
+@@ -29,10 +29,15 @@ struct Program {
+ void register_programs(const Program *programs, std::uint32_t count);
+ 
+ inline std::uint32_t lower_major(std::uint32_t lo) { return lo >> 25; }
+-// Flag reads bypass the one-instruction VI delay seen by branch operands.
++// Flag reads bypass the one-instruction VI delay seen by branch operands. So do the integer loads
++// ILW and ILWR: their result takes four cycles, so a branch on the loaded register stalls until
++// it arrives and then sees the new value (PCSX2's microVU skips the VI delay on a stalled branch).
++// Castlevania: Lament of Innocence's 2D VU1 program loads each packet's type with ILW and branches
++// on it right away; with the delay every menu packet was misread.
+ inline bool branch_delay_exempt(std::uint32_t lo) {
+     switch (lower_major(lo)) {
+-    case 0x10: case 0x12: case 0x13: case 0x14: case 0x16: case 0x17: case 0x18: case 0x1A: case 0x1B: case 0x1C: case 0x21: case 0x25: return true;
++    case 0x04: case 0x10: case 0x12: case 0x13: case 0x14: case 0x16: case 0x17: case 0x18: case 0x1A: case 0x1B: case 0x1C: case 0x21: case 0x25: return true;
++    case 0x40: return (lo & 0x7FFu) == 0x3FEu;
+     default: return false;
+     }
+ }
+diff --git a/runtime/src/dmac.cpp b/runtime/src/dmac.cpp
+index 34fe4f2..cf942cb 100644
+--- a/runtime/src/dmac.cpp
++++ b/runtime/src/dmac.cpp
+@@ -9,6 +9,7 @@
+ #include "ps2/memory.hpp"
+ #include "ps2/system.hpp"
+ #include "vif.hpp"
++#include "vu_micro.hpp"
+ 
+ #include "ps2/state.hpp"
+ 
+@@ -46,13 +47,37 @@ bool tag_data_in_ring(std::uint32_t chcr) {
+     return id == 1 || id == 7;
+ }
+ 
++// The DMAC reaches the vector units' memories too, at their physical addresses 0x11000000 to
++// 0x1100FFFF (the way PCSX2 maps them). Castlevania: Lament of Innocence lets VU0 transform a
++// batch of vertices and brings the results back to the scratchpad with toSPR from 0x11004000.
++bool in_vu(std::uint32_t address) {
++    const std::uint32_t p = address & 0x1FFFFFF0u;
++    return !(address & 0x80000000u) && p >= 0x11000000u && p < 0x11010000u;
++}
++
++std::uint8_t *vu_memory(std::uint32_t address) {
++    const std::uint32_t p = address & 0x1FFFFFF0u;
++    switch ((p >> 12) & 0xFu) {
++    case 0x0: case 0x1: case 0x2: case 0x3: return g_vu0_code + (p & 0xFF0u);
++    case 0x4: case 0x5: case 0x6: case 0x7: return g_vu0_mem + (p & 0xFF0u);
++    case 0x8: case 0x9: case 0xA: case 0xB: return g_vu1_code + (p & 0x3FF0u);
++    default: return g_vu1_mem + (p & 0x3FF0u);
++    }
++}
++
+ const std::uint8_t *source(std::uint32_t address) {
+     if (address & 0x80000000u) return g_spr + (address & (kScratchpadSize - 1));
++    if (in_vu(address)) return vu_memory(address);
+     return g_ram + (address & (kRamSize - 16));
+ }
+ 
+ std::uint8_t *target(std::uint32_t address) {
+     if (address & 0x80000000u) return g_spr + (address & (kScratchpadSize - 1));
++    if (in_vu(address)) {
++        const std::uint32_t p = address & 0x1FFFFFF0u;
++        if (!(p & 0x4000u)) vu::code_changed((p >> 15) & 1u);
++        return vu_memory(address);
++    }
+     return g_ram + (address & (kRamSize - 16));
+ }
+ 
+@@ -62,7 +87,7 @@ void deliver(int ch, std::uint32_t address, std::uint32_t qwc) {
+     const std::size_t bytes = static_cast<std::size_t>(qwc) * 16;
+     const std::size_t room = (address & 0x80000000u) ? kScratchpadSize - (address & (kScratchpadSize - 1)) : kRamSize - (address & (kRamSize - 16));
+     const std::uint8_t *data = source(address);
+-    if (bytes > room || ch == 9) {
++    if (bytes > room || ch == 9 || in_vu(address)) {
+         buffer.resize(bytes);
+         for (std::uint32_t i = 0; i < qwc; ++i) std::memcpy(buffer.data() + i * 16, source(address + i * 16), 16);
+         data = buffer.data();
 diff --git a/runtime/src/gs/gif.cpp b/runtime/src/gs/gif.cpp
 index b5e54c8..7ff9902 100644
 --- a/runtime/src/gs/gif.cpp
@@ -428,3 +509,24 @@ index 68bc21b..5bae753 100644
  #include <deque>
  #include <map>
  #include <set>
+diff --git a/runtime/src/kernel.cpp b/runtime/src/kernel.cpp
+index 3024df3..0d20ce8 100644
+--- a/runtime/src/kernel.cpp
++++ b/runtime/src/kernel.cpp
+@@ -253,10 +253,15 @@ void add_handler(Cpu &c, std::vector<Handler> &list) {
+     ret(c, h.id);
+ }
+ 
++// The kernel answers with how many handlers the cause still has. Libraries that share an
++// interrupt rely on it: Castlevania: Lament of Innocence's movie player masks the VBLANK
++// interrupt, removes its own handler and unmasks it again only when that count is not zero,
++// so that the game's own VSync handler keeps running after a movie.
+ void remove_handler(Cpu &c, std::vector<Handler> &list) {
++    const std::uint32_t cause = arg(c, 0);
+     const int id = static_cast<int>(arg(c, 1));
+     list.erase(std::remove_if(list.begin(), list.end(), [&](const Handler &h) { return h.id == id; }), list.end());
+-    ret(c, 0);
++    ret(c, static_cast<std::uint32_t>(std::count_if(list.begin(), list.end(), [&](const Handler &h) { return h.cause == cause; })));
+ }
+ 
+ void fire_alarm(int id);
