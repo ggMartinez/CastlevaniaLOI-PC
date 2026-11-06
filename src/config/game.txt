@@ -1,0 +1,7 @@
+# The one disc release this build is for. The launcher checks the player's disc against it.
+title=Castlevania: Lament of Innocence
+serial=SLUS-20733
+region=NTSC-U
+version=1.01
+boot=SLUS_207.33
+sha1=317b2271be7f24842c4b357c70599219389c004d

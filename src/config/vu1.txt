@@ -1,0 +1,3 @@
+# VU1 microcode images rebuilt from the boot executable: file vu:elf:size ... (hex)
+795F3FB22C1CE132_0000.bin 0:332628:800 800:332e30:800 1000:333638:348
+CBD76C65DA2048BC_00F0.bin 0:332628:800 800:332e30:800 1000:333638:348

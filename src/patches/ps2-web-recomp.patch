@@ -1,0 +1,430 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6765f07..ff29a42 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ 
+ set(PS2_GENERATED "" CACHE PATH "Folder with the C++ generated for a game")
+ 
++if(WIN32)
++    # Keep <windows.h> from defining min/max and pulling in more than the runtime needs.
++    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
++endif()
++
+ if(EMSCRIPTEN)
+     add_compile_options(-msimd128 -mtail-call -fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=0 -pthread)
+     add_link_options(-msimd128 -mtail-call -fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=0 -pthread)
+@@ -60,7 +65,18 @@ target_include_directories(ps2runtime PUBLIC runtime/include)
+ target_compile_options(ps2runtime PRIVATE -Wall -Wextra)
+ 
+ set(PS2_WGPU_DIR "${CMAKE_SOURCE_DIR}/third_party/wgpu-native" CACHE PATH "wgpu-native release folder")
+-if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
++if(WIN32)
++    # The Windows release links against the DLL's import library and ships wgpu_native.dll beside the runner.
++    if(MINGW)
++        set(PS2_WGPU_LIB "${PS2_WGPU_DIR}/lib/libwgpu_native.dll.a")
++    else()
++        set(PS2_WGPU_LIB "${PS2_WGPU_DIR}/lib/wgpu_native.dll.lib")
++    endif()
++    set(PS2_WGPU_DLL "${PS2_WGPU_DIR}/lib/wgpu_native.dll")
++else()
++    set(PS2_WGPU_LIB "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
++endif()
++if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_LIB}")
+     set(PS2_GS_WGSL "${CMAKE_BINARY_DIR}/gs_wgsl.cpp")
+     add_custom_command(OUTPUT "${PS2_GS_WGSL}"
+         COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/runtime/src/gs/gpu/gs.wgsl -DOUT=${PS2_GS_WGSL} -DNAME=kGsShader -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+@@ -76,15 +92,33 @@ if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
+         target_link_options(ps2runtime PUBLIC --use-port=emdawnwebgpu)
+     else()
+         target_include_directories(ps2runtime PRIVATE "${PS2_WGPU_DIR}/include")
+-        target_link_libraries(ps2runtime PUBLIC "${PS2_WGPU_DIR}/lib/libwgpu_native.a" dl pthread m)
++        if(WIN32)
++            target_link_libraries(ps2runtime PUBLIC "${PS2_WGPU_LIB}")
++        else()
++            target_link_libraries(ps2runtime PUBLIC "${PS2_WGPU_LIB}" dl pthread m)
++        endif()
+         if(APPLE)
+             target_link_libraries(ps2runtime PUBLIC "-framework Metal" "-framework QuartzCore" "-framework Foundation" "-framework CoreFoundation" "-framework IOKit" "-framework IOSurface" objc)
+         endif()
+     endif()
+ endif()
+ 
++# On Windows the runner is built once without any game code and loads it from game.dll, which a
++# player builds from their own disc; the runner exports the runtime for that DLL to import.
++option(PS2_GAME_DLL "Build the runner without game code and load it from game.dll" ${WIN32})
+ if(PS2_GENERATED)
+     file(GLOB PS2_UNITS CONFIGURE_DEPENDS "${PS2_GENERATED}/*.cpp")
++endif()
++
++if(PS2_GENERATED AND PS2_GAME_DLL)
++    add_library(game SHARED ${PS2_UNITS} host/game_entry.cpp)
++    target_compile_definitions(game PRIVATE PS2_GAME_DLL)
++    target_include_directories(game PRIVATE "${PS2_GENERATED}" runtime/include)
++    target_compile_options(game PRIVATE -Wno-unused-label -Wno-unused-variable)
++    set_target_properties(game PROPERTIES PREFIX "")
++endif()
++
++if(PS2_GENERATED AND NOT PS2_GAME_DLL)
+     add_library(ps2game STATIC ${PS2_UNITS})
+     target_include_directories(ps2game PRIVATE "${PS2_GENERATED}")
+     target_link_libraries(ps2game PUBLIC ps2runtime)
+@@ -109,9 +143,25 @@ if(PS2_GENERATED)
+         set_target_properties(ps2web PROPERTIES SUFFIX ".html" LINK_DEPENDS ${CMAKE_SOURCE_DIR}/web/shell.html)
+         return()
+     endif()
++endif()
+ 
++if((PS2_GENERATED OR PS2_GAME_DLL) AND NOT EMSCRIPTEN)
+     add_executable(ps2run host/main.cpp)
+-    target_link_libraries(ps2run PRIVATE ps2game ps2runtime)
++    if(PS2_GAME_DLL)
++        target_compile_definitions(ps2run PRIVATE PS2_GAME_DLL)
++        # game.dll imports from the runner by its file name, so the name is fixed at build time.
++        set(PS2_RUNNER_NAME "ps2run" CACHE STRING "File name (without .exe) of the runner")
++        set_target_properties(ps2run PROPERTIES ENABLE_EXPORTS ON OUTPUT_NAME "${PS2_RUNNER_NAME}")
++        # Every runtime object goes in, so whatever a game's code calls is there to export.
++        target_link_libraries(ps2run PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,ps2runtime>")
++        # lld's MinGW auto-export already leaves out libc++, libunwind and the C runtime.
++        target_link_options(ps2run PRIVATE -Wl,--export-all-symbols)
++        if(TARGET game)
++            target_link_libraries(game PRIVATE ps2run)
++        endif()
++    else()
++        target_link_libraries(ps2run PRIVATE ps2game ps2runtime)
++    endif()
+     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+         target_sources(ps2run PRIVATE host/profile.cpp)
+         target_compile_definitions(ps2run PRIVATE PS2_PROFILE)
+@@ -121,5 +171,41 @@ if(PS2_GENERATED)
+         target_sources(ps2run PRIVATE host/window.cpp)
+         target_compile_definitions(ps2run PRIVATE PS2_WINDOW)
+         target_link_libraries(ps2run PRIVATE SDL2::SDL2)
++        # A game port's launcher (launcher.cpp, builder.cpp, windows.rc) lives outside this tree;
++        # with it and Dear ImGui, the Windows runner opens the launcher when started without arguments.
++        set(PS2_LAUNCHER_DIR "" CACHE PATH "Folder with the game port's launcher sources")
++        set(PS2_IMGUI_DIR "" CACHE PATH "Dear ImGui source folder, needed by the launcher")
++        option(PS2_LAUNCHER_CONSOLE "Give the launcher a console window for its logs (developer builds)" OFF)
++        if(WIN32 AND PS2_GAME_DLL AND PS2_LAUNCHER_DIR AND PS2_IMGUI_DIR)
++            target_sources(ps2run PRIVATE "${PS2_LAUNCHER_DIR}/launcher.cpp" "${PS2_LAUNCHER_DIR}/builder.cpp" "${PS2_LAUNCHER_DIR}/windows.rc"
++                "${PS2_IMGUI_DIR}/imgui.cpp" "${PS2_IMGUI_DIR}/imgui_draw.cpp" "${PS2_IMGUI_DIR}/imgui_tables.cpp"
++                "${PS2_IMGUI_DIR}/imgui_widgets.cpp" "${PS2_IMGUI_DIR}/backends/imgui_impl_sdl2.cpp"
++                "${PS2_IMGUI_DIR}/backends/imgui_impl_sdlrenderer2.cpp")
++            target_include_directories(ps2run PRIVATE "${PS2_LAUNCHER_DIR}" "${PS2_IMGUI_DIR}" "${PS2_IMGUI_DIR}/backends")
++            target_compile_definitions(ps2run PRIVATE PS2_LAUNCHER)
++            target_link_libraries(ps2run PRIVATE bcrypt comdlg32)
++            if(NOT PS2_LAUNCHER_CONSOLE)
++                # A windowed program: no console opens when a player starts it.
++                target_link_options(ps2run PRIVATE -mwindows)
++            endif()
++            set_source_files_properties("${PS2_LAUNCHER_DIR}/windows.rc" PROPERTIES OBJECT_DEPENDS "${PS2_LAUNCHER_DIR}/windows.manifest")
++        endif()
++        if(WIN32)
++            add_custom_command(TARGET ps2run POST_BUILD
++                COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:ps2run>)
++        endif()
++    endif()
++    if(WIN32)
++        # Linux threads get 8 MB of stack by default and Windows ones 1 MB; the emulation and
++        # VU threads are plain std::threads, which take the size from the executable's header.
++        if(MINGW)
++            target_link_options(ps2run PRIVATE "LINKER:--stack,67108864")
++        else()
++            target_link_options(ps2run PRIVATE "LINKER:/STACK:67108864")
++        endif()
++        if(PS2_WGPU_DLL)
++            add_custom_command(TARGET ps2run POST_BUILD
++                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PS2_WGPU_DLL}" $<TARGET_FILE_DIR:ps2run>)
++        endif()
+     endif()
+ endif()
+diff --git a/host/game_entry.cpp b/host/game_entry.cpp
+new file mode 100644
+index 0000000..10ed3b0
+--- /dev/null
++++ b/host/game_entry.cpp
+@@ -0,0 +1,9 @@
++// Compiled into game.dll together with the generated code: the one entry point the runner
++// looks up after loading the DLL. Everything else the game code needs it imports from the runner.
++void register_generated_code();
++void register_generated_vu();
++
++extern "C" __declspec(dllexport) void ps2_register_game() {
++    register_generated_code();
++    register_generated_vu();
++}
+diff --git a/host/main.cpp b/host/main.cpp
+index 2fdf426..38dc226 100644
+--- a/host/main.cpp
++++ b/host/main.cpp
+@@ -13,11 +13,45 @@
+ #include <string>
+ #include <vector>
+ 
++#ifdef PS2_LAUNCHER
++#include "builder.hpp"
++#include "launcher.hpp"
++#endif
++#ifdef PS2_GAME_DLL
++#include <windows.h>
++#else
+ void register_generated_code();
+ void register_generated_vu();
++#endif
+ 
+ namespace {
+ 
++#ifdef PS2_GAME_DLL
++// The game's translated code lives in game.dll (built from the player's own disc), beside the
++// executable unless --game names another file.
++bool load_game(std::string path) {
++    if (path.empty()) {
++        char exe[MAX_PATH];
++        const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
++        path.assign(exe, n);
++        path = path.substr(0, path.find_last_of("\\/") + 1) + "game.dll";
++    }
++    HMODULE dll = LoadLibraryA(path.c_str());
++    if (!dll) {
++        std::fprintf(stderr, "cannot load the game code %s (error %lu)\n", path.c_str(), GetLastError());
++        return false;
++    }
++    using Register = void (*)();
++    const auto reg = reinterpret_cast<Register>(reinterpret_cast<void *>(GetProcAddress(dll, "ps2_register_game")));
++    if (!reg) {
++        std::fprintf(stderr, "%s has no ps2_register_game\n", path.c_str());
++        return false;
++    }
++    reg();
++    return true;
++}
++#endif
++
+ int usage() {
+     std::fprintf(stderr,
+                  "usage: ps2run <elf> [--arg text]... [--frames n] [--run n] [--ntsc] [--misses file]\n"
+@@ -31,10 +65,23 @@ int usage() {
+ }
+ 
+ int main(int argc, char **argv) {
++#ifdef PS2_LAUNCHER
++    // A windowed (GUI-subsystem) executable: reuse the console of whoever started it, if any, so
++    // the logs still show up when it runs from a terminal; a launched game gets a log file instead.
++    if (GetFileType(GetStdHandle(STD_ERROR_HANDLE)) == FILE_TYPE_UNKNOWN && AttachConsole(ATTACH_PARENT_PROCESS)) {
++        std::freopen("CONOUT$", "w", stdout);
++        std::freopen("CONOUT$", "w", stderr);
++    }
++    if (argc < 2) return launcher::run();
++    if (std::strcmp(argv[1], "--build") == 0 && argc == 3) return launcher::build_cli(argv[2]);
++    if (std::strcmp(argv[1], "--dev-vu-recipe") == 0 && argc == 5) return launcher::write_vu_recipe(argv[2], argv[3], argv[4]);
++    if (std::strcmp(argv[1], "--dev-extract") == 0 && argc == 5) return launcher::extract_boot(argv[2], argv[3], argv[4]);
++#endif
+     if (argc < 2) return usage();
+     std::vector<std::string> args{argv[1]};
+     [[maybe_unused]] bool window = false, fullscreen = false;
+     std::string load_path;
++    [[maybe_unused]] std::string game_path;
+     std::uint64_t run_frames = 0;
+     for (int i = 2; i < argc; ++i) {
+         const std::string a = argv[i];
+@@ -81,14 +128,21 @@ int main(int argc, char **argv) {
+             ps2::g_options.save_state_path = spec.substr(colon + 1);
+         }
+         else if (a == "--load-state" && i + 1 < argc) load_path = argv[++i];
++#ifdef PS2_GAME_DLL
++        else if (a == "--game" && i + 1 < argc) game_path = argv[++i];
++#endif
+         else return usage();
+     }
+ 
+ #ifdef PS2_WINDOW
+     if (window && !open_window(fullscreen)) return 1;
+ #endif
++#ifdef PS2_GAME_DLL
++    if (!load_game(game_path)) return 1;
++#else
+     register_generated_code();
+     register_generated_vu();
++#endif
+     const auto emulate = [&]() -> int {
+         std::uint32_t entry = 0;
+         if (!ps2::load_elf(argv[1], entry)) {
+diff --git a/host/window.cpp b/host/window.cpp
+index 984d4d6..2a976a8 100644
+--- a/host/window.cpp
++++ b/host/window.cpp
+@@ -4,8 +4,14 @@
+ 
+ #include <SDL.h>
+ #include <SDL_syswm.h>
++#ifdef _WIN32
++#define PSAPI_VERSION 2
++#include <windows.h>
++#include <psapi.h>
++#else
+ #include <sys/resource.h>
+ #include <unistd.h>
++#endif
+ #ifdef __APPLE__
+ #include <SDL_metal.h>
+ #include <mach/mach.h>
+@@ -101,6 +107,13 @@ bool attach_gpu() {
+     }
+ #endif
+     switch (info.subsystem) {
++#if defined(SDL_VIDEO_DRIVER_WINDOWS)
++    case SDL_SYSWM_WINDOWS:
++        target.kind = ps2::WindowTarget::Windows;
++        target.display = info.info.win.hinstance;
++        target.surface = info.info.win.window;
++        break;
++#endif
+ #if defined(SDL_VIDEO_DRIVER_X11)
+     case SDL_SYSWM_X11:
+         target.kind = ps2::WindowTarget::X11;
+@@ -288,9 +301,16 @@ void pace() {
+ }
+ 
+ double process_cpu_seconds() {
++#ifdef _WIN32
++    FILETIME created, exited, kernel, user;
++    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) return 0.0;
++    const auto ticks = [](const FILETIME &t) { return (static_cast<std::uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime; };
++    return static_cast<double>(ticks(kernel) + ticks(user)) / 1e7;  // 100 ns units
++#else
+     rusage usage{};
+     getrusage(RUSAGE_SELF, &usage);
+     return static_cast<double>(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + static_cast<double>(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6;
++#endif
+ }
+ 
+ double resident_mb() {
+@@ -300,12 +320,18 @@ double resident_mb() {
+     if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&task), &count) != KERN_SUCCESS) return 0.0;
+     return static_cast<double>(task.resident_size) / (1024.0 * 1024.0);
+ #endif
++#ifdef _WIN32
++    PROCESS_MEMORY_COUNTERS counters{};
++    if (!GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) return 0.0;
++    return static_cast<double>(counters.WorkingSetSize) / (1024.0 * 1024.0);
++#else
+     long pages = 0, resident = 0;
+     if (std::FILE *f = std::fopen("/proc/self/statm", "r")) {
+         if (std::fscanf(f, "%ld %ld", &pages, &resident) != 2) resident = 0;
+         std::fclose(f);
+     }
+     return static_cast<double>(resident) * static_cast<double>(sysconf(_SC_PAGESIZE)) / (1024.0 * 1024.0);
++#endif
+ }
+ 
+ void show_speed() {
+diff --git a/recomp/vurecomp.cpp b/recomp/vurecomp.cpp
+index a7e0785..d06e504 100644
+--- a/recomp/vurecomp.cpp
++++ b/recomp/vurecomp.cpp
+@@ -657,7 +657,7 @@ int main(int argc, char **argv) {
+         f.read(reinterpret_cast<char *>(p.code.data()), static_cast<std::streamsize>(p.code.size()));
+         const auto pcs = ps2::vu::reachable(p.code.data(), kMask, entry);
+         if (ps2::vu::program_key(p.code.data(), pcs, entry) != key) {
+-            std::fprintf(stderr, "%s: key mismatch, skipped\n", e.path().filename().c_str());
++            std::fprintf(stderr, "%s: key mismatch, skipped\n", e.path().filename().string().c_str());
+             continue;
+         }
+         if (ps2::vu::branch_in_delay_slot(p.code.data(), kMask, entry)) continue;
+diff --git a/runtime/include/ps2/memory.hpp b/runtime/include/ps2/memory.hpp
+index 6a919d2..efd4b09 100644
+--- a/runtime/include/ps2/memory.hpp
++++ b/runtime/include/ps2/memory.hpp
+@@ -11,11 +11,19 @@ inline constexpr std::uint32_t kRamSize = 32u << 20;
+ inline constexpr std::uint32_t kScratchpadBase = 0x70000000u;
+ inline constexpr std::uint32_t kScratchpadSize = 16u << 10;
+ 
+-extern std::uint8_t g_ram[];
+-extern std::uint8_t g_spr[];
+-
+-extern bool g_watch_on;
+-extern std::uint32_t g_watch_base, g_watch_end;
++// Game code built as a DLL (PS2_GAME_DLL) reads the runtime's memory through the executable's
++// import table; explicit dllimport keeps those accesses from depending on MinGW's auto-import.
++#if defined(_WIN32) && defined(PS2_GAME_DLL)
++#define PS2_RUNTIME_DATA __declspec(dllimport)
++#else
++#define PS2_RUNTIME_DATA
++#endif
++
++extern PS2_RUNTIME_DATA std::uint8_t g_ram[];
++extern PS2_RUNTIME_DATA std::uint8_t g_spr[];
++
++extern PS2_RUNTIME_DATA bool g_watch_on;
++extern PS2_RUNTIME_DATA std::uint32_t g_watch_base, g_watch_end;
+ void watch_hit(std::uint32_t a, std::uint32_t v, const char *via);
+ void watch_span(std::uint32_t a, std::uint32_t n, const char *via);
+ void init_watch();
+diff --git a/runtime/include/ps2/system.hpp b/runtime/include/ps2/system.hpp
+index f447223..75b8372 100644
+--- a/runtime/include/ps2/system.hpp
++++ b/runtime/include/ps2/system.hpp
+@@ -101,7 +101,7 @@ std::uint64_t frame_count();
+ bool display_frame(std::vector<std::uint32_t> &rgba, std::uint32_t &width, std::uint32_t &height);
+ 
+ struct WindowTarget {
+-    enum Kind { X11, Wayland, Canvas, Metal } kind = X11;
++    enum Kind { X11, Wayland, Canvas, Metal, Windows } kind = X11;  // Windows: display = HINSTANCE, surface = HWND
+     void *display = nullptr;
+     std::uint64_t window = 0;
+     void *surface = nullptr;
+diff --git a/runtime/src/gs/gif.cpp b/runtime/src/gs/gif.cpp
+index b5e54c8..7ff9902 100644
+--- a/runtime/src/gs/gif.cpp
++++ b/runtime/src/gs/gif.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include <algorithm>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <vector>
+ 
+diff --git a/runtime/src/gs/gpu/gpu.cpp b/runtime/src/gs/gpu/gpu.cpp
+index 5a13c3e..ea5cc38 100644
+--- a/runtime/src/gs/gpu/gpu.cpp
++++ b/runtime/src/gs/gpu/gpu.cpp
+@@ -1709,7 +1709,12 @@ bool attach_surface(const SurfaceTarget &target) {
+     WGPUSurfaceSourceXlibWindow xlib = WGPU_SURFACE_SOURCE_XLIB_WINDOW_INIT;
+     WGPUSurfaceSourceWaylandSurface wayland = WGPU_SURFACE_SOURCE_WAYLAND_SURFACE_INIT;
+     WGPUSurfaceSourceMetalLayer metal = WGPU_SURFACE_SOURCE_METAL_LAYER_INIT;
+-    if (target.kind == SurfaceTarget::Metal) {
++    WGPUSurfaceSourceWindowsHWND hwnd = WGPU_SURFACE_SOURCE_WINDOWS_HWND_INIT;
++    if (target.kind == SurfaceTarget::Windows) {
++        hwnd.hinstance = target.display;
++        hwnd.hwnd = target.surface;
++        sd.nextInChain = &hwnd.chain;
++    } else if (target.kind == SurfaceTarget::Metal) {
+         metal.layer = target.surface;
+         sd.nextInChain = &metal.chain;
+     } else if (target.kind == SurfaceTarget::X11) {
+diff --git a/runtime/src/gs/gpu/gpu.hpp b/runtime/src/gs/gpu/gpu.hpp
+index 734e4e4..bf617a9 100644
+--- a/runtime/src/gs/gpu/gpu.hpp
++++ b/runtime/src/gs/gpu/gpu.hpp
+@@ -15,7 +15,7 @@ struct DisplaySource {
+ };
+ 
+ struct SurfaceTarget {
+-    enum Kind { X11, Wayland, Canvas, Metal } kind;
++    enum Kind { X11, Wayland, Canvas, Metal, Windows } kind;
+     void *display;
+     std::uint64_t window;
+     void *surface;
+diff --git a/runtime/src/iop/libs.cpp b/runtime/src/iop/libs.cpp
+index 68bc21b..5bae753 100644
+--- a/runtime/src/iop/libs.cpp
++++ b/runtime/src/iop/libs.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ #include <cstdio>
++#include <cstdlib>
+ #include <deque>
+ #include <map>
+ #include <set>

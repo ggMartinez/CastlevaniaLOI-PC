@@ -1,0 +1,11 @@
+# Everything the scripts build (build.bat, release.bat, src\scripts\explore.ps1)
+/output/
+
+# External tools and libraries, downloaded by the build scripts (src\scripts\fetch-tools.ps1)
+/tools/
+
+# The game: disc images and anything taken from them
+*.iso
+SLUS_*
+
+/.vscode/
