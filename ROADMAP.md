@@ -20,7 +20,7 @@ Each part's percentage is an estimate of how much of the way to its native goal 
 | 3 | [Disc drive](#3-disc-drive) | CDVD | Done | 100% |
 | 4 | [Movies](#4-movies) | IPU, `.PSS` files | To do | 0% |
 | 5 | [Kernel threads](#5-kernel-threads) | EE kernel | Later | 80% |
-| 6 | [Sound](#6-sound) | SPU2, IOP | In progress | 50% |
+| 6 | [Sound](#6-sound) | SPU2, IOP | Done | 99% |
 | 7 | [VU0 microprograms](#7-vu0-microprograms) | VU0 | Done | 100% |
 | 8 | [Rendering](#8-rendering) | GS, VIF/GIF, VU1 output | To do | 0% |
 
@@ -74,7 +74,8 @@ compiled into `game.dll` on the player's PC.
 
 ## 6. Sound
 
-**In progress, 50%.**
+**Done, 99%.** The remaining 1% is the IOP instructions the interpreter still runs, where a thread
+resumes in the middle of a block.
 
 1. **Done: the IOP's modules run natively.** `ioprecomp` translates the IOP modules to C++:
    - Konami's sound driver, Sony's sound library, the MIDI sequencer and the disc streamer;
@@ -90,9 +91,12 @@ compiled into `game.dll` on the player's PC.
 3. **Optional:** a native sound engine in place of the driver and the SPU2, playing the game's sound banks and music
    straight through SDL.
 
-- **Today:** the SPU2 is emulated: it is fixed-function hardware with no program to translate. Its IOP DMA is emulated
-  too.
-- **Missing from the SPU2:** pitch modulation and the noise generator; not checked whether the game uses them.
+- **Today:** the SPU2 and its IOP DMA are reproduced in C++. The SPU2 is fixed-function hardware with no program to
+  translate, so modelling its behaviour is its native form.
+- **Not emulated, and not used by the game:** the SPU2's pitch modulation and noise generator. Its code shows it never
+  turns them on. Sony's sound library writes those registers only to clear them at start-up. No call from the IOP
+  modules or the game's EE code passes their switch entries (0x13, 0x14) or the noise clock attribute (8). No module
+  calls those functions any other way, and the EE never sends batch commands.
 - **Notes:**
   - The translated IOP code was compared with the interpreter over 16 million blocks and none differed. Boot and title
     audio are bit-identical to the interpreted run, and IOP time is about half the interpreter's.
