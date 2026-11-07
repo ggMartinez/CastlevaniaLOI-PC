@@ -108,7 +108,7 @@ your disc ──► launcher ──► eerecomp ──► C++ ──► clang �
 
 - **[ps2-web-recomp](https://github.com/snuri00/ps2-web-recomp)** by snuri00 does the heavy
   lifting. `eerecomp` translates the Emotion Engine's MIPS code to C++, and `vurecomp` does the
-  same for the game's VU1 microcode. Its runtime provides the rest of the PS2: a GS renderer on
+  same for the game's VU1 and VU0 microcode (this port added VU0). Its runtime provides the rest of the PS2: a GS renderer on
   the GPU (wgpu: Direct3D 12 or Vulkan), VU1, the IPU (video), SPU2 (sound), an IOP interpreter
   and the memory card. This port adds Windows support on top of it.
 - **`CastlevaniaLoI.exe`** holds the launcher and the runtime, with no game code inside. It
@@ -117,8 +117,8 @@ your disc ──► launcher ──► eerecomp ──► C++ ──► clang �
   [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (Clang and LLD) that ships in the release's
   `compiler\` folder.
 - **The game's configuration** (`src\config\`) is what this port knows about the disc: its hash,
-  the code entry points that static analysis misses, and a recipe that rebuilds the VU1 microcode
-  images out of the disc's own executable, so no game bytes are ever stored here. It also lists
+  the code entry points that static analysis misses, and recipes that rebuild the VU1 and VU0
+  microcode images out of the disc's own executable (`vu1.txt`, `vu0.txt`), so no game bytes are ever stored here. It also lists
   code patches (`code-patches.txt`, like PCSX2's `.pnach` ones): a translated game cannot be
   patched by writing its memory, so the translator builds each patched instruction both ways and
   the runtime picks one, here the widescreen patch when Widescreen is on.
@@ -184,8 +184,8 @@ that has not been saved into the patch.
 Static analysis cannot find every function a game calls through pointers. When the game reaches
 code that was not translated, the runtime records the address. `src\scripts\explore.ps1` runs the
 game headless, adds the addresses it found to `src\config\entries.txt`, translates and builds
-again, and repeats until a run finds nothing new. It also records the VU1 microcode the game
-uploads into `src\config\vu1.txt`.
+again, and repeats until a run finds nothing new. It also records the VU1 and VU0 microcode the
+game uploads into `src\config\vu1.txt` and `vu0.txt`.
 
 ```powershell
 powershell -File src\scripts\explore.ps1 -Frames 3600 -Rounds 8
@@ -202,7 +202,7 @@ they are the game's.
 build.bat, clean-build.bat, release.bat
                          the build entry points
 src\launcher\            the launcher and the game builder (launcher.cpp, builder.cpp)
-src\config\              what the port knows about the disc: hash, entry points, VU1 recipe, code patches
+src\config\              what the port knows about the disc: hash, entry points, VU recipes, code patches
 src\patches\             this port's changes to ps2-web-recomp
 src\scripts\             compile.cmd, assemble.ps1, fetch-tools.ps1, update-patch.ps1, explore.ps1
 src\cmake\               the CMake toolchain file for llvm-mingw

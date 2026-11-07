@@ -140,18 +140,20 @@ index 6765f07..ff29a42 100644
  endif()
 diff --git a/host/game_entry.cpp b/host/game_entry.cpp
 new file mode 100644
-index 0000000..10ed3b0
+index 0000000..acc4b2b
 --- /dev/null
 +++ b/host/game_entry.cpp
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,11 @@
 +// Compiled into game.dll together with the generated code: the one entry point the runner
 +// looks up after loading the DLL. Everything else the game code needs it imports from the runner.
 +void register_generated_code();
 +void register_generated_vu();
++void register_generated_vu0();
 +
 +extern "C" __declspec(dllexport) void ps2_register_game() {
 +    register_generated_code();
 +    register_generated_vu();
++    register_generated_vu0();
 +}
 diff --git a/host/main.cpp b/host/main.cpp
 index 2fdf426..a5f0070 100644
@@ -754,10 +756,105 @@ index 52faafe..3607b9a 100644
          }
      } catch (const std::exception &error) {
 diff --git a/recomp/vurecomp.cpp b/recomp/vurecomp.cpp
-index a7e0785..918cb85 100644
+index a7e0785..f81569f 100644
 --- a/recomp/vurecomp.cpp
 +++ b/recomp/vurecomp.cpp
-@@ -657,7 +657,7 @@ int main(int argc, char **argv) {
+@@ -16,7 +16,10 @@ namespace fs = std::filesystem;
+ 
+ namespace {
+ 
+-constexpr std::uint32_t kMask = 16383u;
++// The unit being compiled (--vu0 for VU0) and its code size less one: VU1 has 16 KB of code and
++// data, VU0 4 KB of each.
++int g_unit = 1;
++std::uint32_t kMask = 16383u;
+ constexpr int kAcc = 32;
+ 
+ struct Program {
+@@ -384,9 +387,13 @@ Lower lower(std::uint32_t w, std::uint32_t pc) {
+         case 0x64:
+             if (ft) l.writes = static_cast<int>(ft);
+             if (ft) for (int i = 0; i < 4; ++i) if (lane(dest, i)) c += std::format("r.vf[{}].w[{}] = r.p; ", ft, i); break;
+-        case 0x68: c = std::format("set_vi(r, {}, vu::top(1)); ", it); break;
+-        case 0x69: c = std::format("set_vi(r, {}, vu::itop(1)); ", it); break;
+-        case 0x6C: c = std::format("vu::kick(1, r.vi[{}]); ", is); break;
++        case 0x68: c = std::format("set_vi(r, {}, vu::top({})); ", it, g_unit); break;
++        case 0x69: c = std::format("set_vi(r, {}, vu::itop({})); ", it, g_unit); break;
++        case 0x6C:
++            // XGKICK exists only on VU1: left to the interpreter on VU0
++            if (g_unit == 0) l.supported = false;
++            else c = std::format("vu::kick(1, r.vi[{}]); ", is);
++            break;
+         case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: case 0x78: case 0x79: case 0x7A: case 0x7C: case 0x7D: case 0x7E:
+             c = std::format("efu(r, {}u, {}u, {}u); ", index, fs, fsf);
+             break;
+@@ -502,6 +509,24 @@ std::string generate(const Program &p, std::string &name) {
+         any_clip = any_clip || ps2::vu::reads_clip(lo, hi);
+         lowers[pc] = l;
+     }
++    // VU0's flags outlive the program: the CPU reads its MAC and status registers (CFC2) after a
++    // microprogram, so every flag result is kept, sticky status bits included, as the interpreter
++    // does. On VU1 only flags the program itself reads are computed.
++    if (g_unit == 0) any_status = any_flags = true;
++    // An instruction left to the interpreter in a branch's delay slot: the interpreter, started
++    // there, would not know the branch is pending and would run on in sequence. Hand over at the
++    // branch instead, so the interpreter runs the pair. (Castlevania's VU0 jump table has XITOP in
++    // its delay slots.)
++    for (bool changed = true; changed;) {
++        changed = false;
++        for (std::uint32_t pc : pcs) {
++            const std::uint32_t prev = (pc - 8u) & kMask;
++            if (lowers[pc].supported || !in.count(prev) || !lowers[prev].supported) continue;
++            if (!lowers[prev].branch && !lowers[prev].jump) continue;
++            lowers[prev].supported = false;
++            changed = true;
++        }
++    }
+     std::map<std::uint32_t, bool> live_in;
+     const auto successors = [&](std::uint32_t pc) {
+         std::vector<std::int64_t> s{static_cast<std::int64_t>((pc + 8u) & kMask)};
+@@ -567,7 +592,7 @@ std::string generate(const Program &p, std::string &name) {
+     std::set<int> shadowed;
+     for (std::uint32_t pc : pcs)
+         for (int reg : upper(word(p.code, pc + 4), true).shadow_reads) shadowed.insert(reg);
+-    name = std::format("vu1_{:016X}", p.key);
++    name = std::format("vu{}_{:016X}", g_unit, p.key);
+     std::string o = std::format("void {}(Vu0Regs &r, std::uint8_t *mem) {{\n    FlagPipe fl;\n    fl.start(r);\n    bool pend = false, pendj = false, ending = false;\n    std::uint32_t jpc = 0;\n    (void)pend;\n    (void)pendj;\n    (void)ending;\n    (void)jpc;\n",
+                                 name);
+     if (!delay.empty()) o += "    std::uint16_t bk = 0, next_bk = 0;\n    unsigned bi = 0;\n    (void)bk;\n    (void)next_bk;\n    (void)bi;\n";
+@@ -635,17 +660,28 @@ std::string generate(const Program &p, std::string &name) {
+         replace_all(o, "vu::interpret(", "fl.flush_q(r); vu::interpret(");
+         replace_all(o, "r.tpc = ", "fl.flush_q(r); r.tpc = ");
+     }
++    if (g_unit == 0) {
++        replace_all(o, "vu::interpret(1, ", "vu::interpret(0, ");
++        replace_all(o, "qword(mem, ", "qword0(mem, ");
++    }
+     return local_vi(o);
+ }
+ 
+ }
+ 
+ int main(int argc, char **argv) {
+-    if (argc < 3) {
+-        std::fprintf(stderr, "usage: vurecomp <recorded programs dir> <out dir>\n");
++    int arg = 1;
++    if (argc > 1 && std::string(argv[1]) == "--vu0") {
++        g_unit = 0;
++        kMask = 4095u;
++        ++arg;
++    }
++    if (argc - arg < 2) {
++        std::fprintf(stderr, "usage: vurecomp [--vu0] <recorded programs dir> <out dir>\n");
+         return 1;
+     }
+-    const fs::path in_dir = argv[1], out_dir = argv[2];
++    const fs::path in_dir = argv[arg], out_dir = argv[arg + 1];
++    const std::string prefix = std::format("vu{}_", g_unit);
+     std::vector<Program> programs;
+     for (const auto &e : fs::directory_iterator(in_dir)) {
+         if (e.path().extension() != ".bin") continue;
+@@ -657,7 +693,7 @@ int main(int argc, char **argv) {
          f.read(reinterpret_cast<char *>(p.code.data()), static_cast<std::streamsize>(p.code.size()));
          const auto pcs = ps2::vu::reachable(p.code.data(), kMask, entry);
          if (ps2::vu::program_key(p.code.data(), pcs, entry) != key) {
@@ -766,7 +863,7 @@ index a7e0785..918cb85 100644
              continue;
          }
          if (ps2::vu::branch_in_delay_slot(p.code.data(), kMask, entry)) continue;
-@@ -675,6 +675,20 @@ int main(int argc, char **argv) {
+@@ -675,6 +711,20 @@ int main(int argc, char **argv) {
              if (op == 0x21 || op == 0x25) targets.insert((pc + 16u) & kMask);
              if (op == 0x08 && ((lo >> 11) & 15u) == 0) targets.insert(((((lo >> 10) & 0x7800u) | (lo & 0x7FFu)) * 8u) & kMask);
          }
@@ -787,6 +884,40 @@ index a7e0785..918cb85 100644
          for (std::uint32_t target : targets) {
              const std::uint64_t key = ps2::vu::program_key(programs[i].code.data(), ps2::vu::reachable(programs[i].code.data(), kMask, target), target);
              if (ps2::vu::branch_in_delay_slot(programs[i].code.data(), kMask, target)) continue;
+@@ -684,7 +734,7 @@ int main(int argc, char **argv) {
+     std::sort(programs.begin(), programs.end(), [](const Program &a, const Program &b) { return a.key < b.key; });
+     fs::create_directories(out_dir);
+     for (const auto &e : fs::directory_iterator(out_dir))
+-        if (e.path().filename().string().rfind("vu1_", 0) == 0) fs::remove(e.path());
++        if (e.path().filename().string().rfind(prefix, 0) == 0) fs::remove(e.path());
+     const std::size_t per_file = 16;
+     std::vector<std::string> names;
+     for (std::size_t first = 0; first < programs.size(); first += per_file) {
+@@ -695,15 +745,19 @@ int main(int argc, char **argv) {
+             names.push_back(name);
+         }
+         text += "}\n";
+-        std::ofstream(out_dir / std::format("vu1_{:03}.cpp", first / per_file)) << text;
++        std::ofstream(out_dir / std::format("{}{:03}.cpp", prefix, first / per_file)) << text;
+     }
++    const std::string array = g_unit == 0 ? "kVu0Programs" : "kVuPrograms";
+     std::string table = "#include \"ps2/vu_ops.hpp\"\n\nnamespace gen {\n";
+     for (const auto &n : names) table += std::format("void {}(ps2::Vu0Regs &r, std::uint8_t *mem);\n", n);
+-    table += "\nconst ps2::vu::Program kVuPrograms[] = {\n";
++    table += std::format("\nconst ps2::vu::Program {}[] = {{\n", array);
+     for (std::size_t i = 0; i < programs.size(); ++i) table += std::format("    {{0x{:016X}ull, {}}},\n", programs[i].key, names[i]);
+     if (programs.empty()) table += "    {0, nullptr},\n";
+-    table += std::format("}};\n\n}}\n\nvoid register_generated_vu() {{ ps2::vu::register_programs(gen::kVuPrograms, {}u); }}\n", programs.size());
+-    std::ofstream(out_dir / "vu1_table.cpp") << table;
+-    std::printf("%zu VU1 programs, %zu of them jump targets\n", programs.size(), programs.size() - recorded);
++    if (g_unit == 0)
++        table += std::format("}};\n\n}}\n\nvoid register_generated_vu0() {{ ps2::vu::register_programs_vu0(gen::{}, {}u); }}\n", array, programs.size());
++    else
++        table += std::format("}};\n\n}}\n\nvoid register_generated_vu() {{ ps2::vu::register_programs(gen::{}, {}u); }}\n", array, programs.size());
++    std::ofstream(out_dir / (prefix + "table.cpp")) << table;
++    std::printf("%zu VU%d programs, %zu of them jump targets\n", programs.size(), g_unit, programs.size() - recorded);
+     return 0;
+ }
 diff --git a/runtime/include/ps2/disc.hpp b/runtime/include/ps2/disc.hpp
 index 0f1af64..59f34af 100644
 --- a/runtime/include/ps2/disc.hpp
@@ -896,11 +1027,15 @@ index f447223..47d9b36 100644
  void start_render_thread();
  void start_vu_thread();
 diff --git a/runtime/include/ps2/vu_ops.hpp b/runtime/include/ps2/vu_ops.hpp
-index d98afb7..8c50a93 100644
+index d98afb7..ddc0f8f 100644
 --- a/runtime/include/ps2/vu_ops.hpp
 +++ b/runtime/include/ps2/vu_ops.hpp
-@@ -29,10 +29,15 @@ struct Program {
+@@ -27,12 +27,19 @@ struct Program {
+ };
+ 
  void register_programs(const Program *programs, std::uint32_t count);
++// VU0's compiled microprograms (vurecomp --vu0), keyed over VU0's 4 KB of code.
++void register_programs_vu0(const Program *programs, std::uint32_t count);
  
  inline std::uint32_t lower_major(std::uint32_t lo) { return lo >> 25; }
 -// Flag reads bypass the one-instruction VI delay seen by branch operands.
@@ -916,6 +1051,15 @@ index d98afb7..8c50a93 100644
 +    case 0x40: return (lo & 0x7FFu) == 0x3FEu;
      default: return false;
      }
+ }
+@@ -569,6 +576,8 @@ struct FlagPipe {
+ };
+ 
+ PS2_VU_INLINE std::uint8_t *qword(std::uint8_t *mem, std::uint32_t index) { return mem + (index & 1023u) * 16u; }
++// VU0's data memory: 4 KB, so 256 quadwords.
++PS2_VU_INLINE std::uint8_t *qword0(std::uint8_t *mem, std::uint32_t index) { return mem + (index & 255u) * 16u; }
+ PS2_VU_INLINE void set_vi(Vu0Regs &r, unsigned i, std::uint32_t v) {
+     if (i) r.vi[i] = static_cast<std::uint16_t>(v);
  }
 diff --git a/runtime/src/disc.cpp b/runtime/src/disc.cpp
 index 4491f35..b3353d4 100644
@@ -1805,10 +1949,18 @@ index 86f8ca9..71a6d67 100644
  #ifdef __EMSCRIPTEN__
  EM_ASYNC_JS(void, ps2_browser_yield, (), {
 diff --git a/runtime/src/vu_micro.cpp b/runtime/src/vu_micro.cpp
-index e83b8c9..e357c61 100644
+index e83b8c9..d9f49f1 100644
 --- a/runtime/src/vu_micro.cpp
 +++ b/runtime/src/vu_micro.cpp
-@@ -482,7 +482,11 @@ void xgkick(Unit &u, std::uint32_t address) {
+@@ -12,6 +12,7 @@
+ #include "ps2/state.hpp"
+ 
+ #include <atomic>
++#include <chrono>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -482,7 +483,11 @@ void xgkick(Unit &u, std::uint32_t address) {
              std::memcpy(buffer + count * 16, qword(u, q), 16);
          done = eop;
      }
@@ -1821,3 +1973,165 @@ index e83b8c9..e357c61 100644
  }
  
  // A VU branch that reads an integer register the instruction right before it
+@@ -896,13 +901,16 @@ bool g_chaining = false;
+ std::int64_t g_chained = -1;
+ std::uint64_t g_last_key = 0;
+ 
++void run_exact(int n, std::uint32_t address);
++
+ void interpret(int unit, std::uint32_t pc) {
+     if (unit == 1 && g_capture) {
+         *g_capture = pc;
+         return;
+     }
+     if (unit != 1) {
+-        run_entry(unit, pc);
++        // a compiled VU0 program handing an instruction it has no code for to the interpreter
++        run_exact(unit, pc);
+         return;
+     }
+     if (g_chaining) {
+@@ -1132,12 +1140,143 @@ void run_fast(int n, std::uint32_t address) {
+     std::fprintf(stderr, "[vu%d] program at 0x%04X did not end\n", n, address);
+ }
+ 
++void run_unit(int n, std::uint32_t address);
++
++// Development measurement (PS2_VU0_TIME): time spent in VU0 programs, every 300 frames.
+ void run(int n, std::uint32_t address) {
++    static const bool timed = std::getenv("PS2_VU0_TIME") != nullptr;
++    if (!timed || n != 0) {
++        run_unit(n, address);
++        return;
++    }
++    static std::uint64_t calls = 0, ns = 0, last_frame = 0;
++    static std::unordered_map<std::uint32_t, std::uint64_t> by_entry;
++    const auto t0 = std::chrono::steady_clock::now();
++    run_unit(n, address);
++    ns += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
++    ++calls;
++    ++by_entry[address & 4095u];
++    const std::uint64_t frame = frame_count();
++    if (frame >= last_frame + 300) {
++        if (last_frame)
++            std::fprintf(stderr, "[vu0-time] frames %llu-%llu: %llu calls, %.1f ms (%.2f ms/frame), %zu entries\n", static_cast<unsigned long long>(last_frame),
++                         static_cast<unsigned long long>(frame), static_cast<unsigned long long>(calls), ns / 1e6, ns / 1e6 / static_cast<double>(frame - last_frame), by_entry.size());
++        last_frame = frame;
++        calls = ns = 0;
++        by_entry.clear();
++    }
++}
++
++void run_exact(int n, std::uint32_t address);
++
++// VU0's compiled microprograms (vurecomp --vu0), by the same key as VU1's: the code reachable
++// from the entry. An entry is looked up again only after VU0's code changes.
++std::unordered_map<std::uint64_t, ProgramFn> g_programs0;
++struct Vu0Entry {
++    std::uint32_t generation = 0;
++    ProgramFn function = nullptr;
++};
++Vu0Entry g_vu0_entries[512];
++
++void register_programs_vu0(const Program *programs, std::uint32_t count) {
++    for (std::uint32_t i = 0; i < count; ++i)
++        if (programs[i].function) g_programs0[programs[i].key] = programs[i].function;
++}
++
++ProgramFn lookup_vu0(std::uint32_t address) {
++    Vu0Entry &e = g_vu0_entries[(address & 4095u) >> 3];
++    if (e.generation == g_generation[0]) return e.function;
++    e.generation = g_generation[0];
++    const std::uint64_t key = program_key(g_vu0_code, reachable(g_vu0_code, 4095u, address & 4095u), address & 4095u);
++    const auto it = g_programs0.find(key);
++    e.function = it == g_programs0.end() ? nullptr : it->second;
++    // Porting work: PS2_VU0_RECORD=dir saves VU0's code for every entry with no compiled program,
++    // as vurecomp --vu0 takes it (and --dev-vu-recipe turns into a recipe).
++    static const char *record = std::getenv("PS2_VU0_RECORD");
++    if (!e.function && record) {
++        char name[64];
++        std::snprintf(name, sizeof name, "%016llX_%03X.bin", static_cast<unsigned long long>(key), address & 4095u);
++        const std::filesystem::path path = std::filesystem::path(record) / name;
++        if (!std::filesystem::exists(path)) {
++            std::filesystem::create_directories(record);
++            std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char *>(g_vu0_code), 4096);
++            std::fprintf(stderr, "[vu0] recorded %s\n", name);
++        }
++    }
++    return e.function;
++}
++
++// A VU0 microprogram: compiled when one was built for this code, else interpreted. PS2_VU0_CHECK
++// runs both from the same state on every call and reports where they differ (the compiled
++// result is kept); PS2_VU0_CHECK=fast compares with the fast interpreter VU1 uses instead of the
++// exact one (the two differ in the last bit of some results). PS2_VU_INTERPRET interprets everything.
++void run_vu0(std::uint32_t address) {
++    static const bool interpret_only = std::getenv("PS2_VU_INTERPRET") != nullptr;
++    static const bool check = std::getenv("PS2_VU0_CHECK") != nullptr;
++    const ProgramFn fn = interpret_only ? nullptr : lookup_vu0(address);
++    if (!fn) {
++        run_exact(0, address);
++        return;
++    }
++    if (!check) {
++        fn(g_cpu.vu0, g_vu0_mem);
++        return;
++    }
++    static std::uint64_t calls = 0, mismatches = 0;
++    static std::uint8_t before_mem[4096], compiled_mem[4096];
++    const Vu0Regs before = g_cpu.vu0;
++    std::memcpy(before_mem, g_vu0_mem, sizeof before_mem);
++    fn(g_cpu.vu0, g_vu0_mem);
++    const Vu0Regs compiled = g_cpu.vu0;
++    std::memcpy(compiled_mem, g_vu0_mem, sizeof compiled_mem);
++    g_cpu.vu0 = before;
++    std::memcpy(g_vu0_mem, before_mem, sizeof before_mem);
++    static const bool against_fast = std::string(std::getenv("PS2_VU0_CHECK")) == "fast";
++    if (against_fast) run_fast(0, address);
++    else run_exact(0, address);
++    ++calls;
++    if (std::memcmp(&compiled, &g_cpu.vu0, sizeof compiled) != 0 || std::memcmp(compiled_mem, g_vu0_mem, sizeof compiled_mem) != 0) {
++        if (++mismatches <= 20) {
++            int vf = -1, vi = -1, byte = -1;
++            for (int i = 0; i < 32 && vf < 0; ++i)
++                if (std::memcmp(&compiled.vf[i], &g_cpu.vu0.vf[i], 16) != 0) vf = i;
++            for (int i = 0; i < 16 && vi < 0; ++i)
++                if (compiled.vi[i] != g_cpu.vu0.vi[i]) vi = i;
++            for (int i = 0; i < 4096 && byte < 0; ++i)
++                if (compiled_mem[i] != g_vu0_mem[i]) byte = i;
++            const Vu0Regs &x = g_cpu.vu0;
++            std::fprintf(stderr, "[vu0-check] entry %03X: vf%d vi%d acc %d q/p/i/r %d flags %d tpc %u/%u mem byte %d\n", address & 4095u, vf, vi,
++                         std::memcmp(&compiled.acc, &x.acc, 16) != 0, compiled.q != x.q || compiled.p != x.p || compiled.i != x.i || compiled.r != x.r,
++                         compiled.mac != x.mac || compiled.status != x.status || compiled.clip != x.clip, compiled.tpc, x.tpc, byte);
++            const auto show = [](const char *what, const Reg128 &a, const Reg128 &b) {
++                std::fprintf(stderr, "    %s compiled %08X %08X %08X %08X reference %08X %08X %08X %08X\n", what, a.w[0], a.w[1], a.w[2], a.w[3], b.w[0], b.w[1], b.w[2], b.w[3]);
++            };
++            if (vf >= 0) show("vf", compiled.vf[vf], x.vf[vf]);
++            if (std::memcmp(&compiled.acc, &x.acc, 16) != 0) show("acc", compiled.acc, x.acc);
++            std::fprintf(stderr, "    mac %04X/%04X status %03X/%03X clip %06X/%06X\n", compiled.mac, x.mac, compiled.status, x.status, compiled.clip, x.clip);
++        }
++    }
++    if (calls % 2000 == 0)
++        std::fprintf(stderr, "[vu0-check] %llu calls compared, %llu differ\n", static_cast<unsigned long long>(calls), static_cast<unsigned long long>(mismatches));
++    g_cpu.vu0 = compiled;
++    std::memcpy(g_vu0_mem, compiled_mem, sizeof compiled_mem);
++}
++
++void run_unit(int n, std::uint32_t address) {
+     static const bool exact = std::getenv("PS2_VU_EXACT") != nullptr;
+     if (n == 1 && !exact) {
+         interpret(n, address);
+         return;
+     }
++    if (n == 0 && !exact) {
++        run_vu0(address);
++        return;
++    }
++    run_exact(n, address);
++}
++
++// The reference interpreter, one instruction pair at a time (VU0's, and VU1's with PS2_VU_EXACT).
++void run_exact(int n, std::uint32_t address) {
+     Unit u = unit_of(n);
+     Vu0Regs &r = *u.regs;
+     vuops::FlagPipe pipe;

@@ -20,7 +20,8 @@ namespace launcher {
 
 namespace {
 
-constexpr std::size_t kVuImageSize = 16 * 1024;
+constexpr std::size_t kVuImageSize = 16 * 1024;   // VU1's code memory
+constexpr std::size_t kVu0ImageSize = 4 * 1024;   // VU0's
 
 std::string utf8(const std::wstring &w) {
     if (w.empty()) return {};
@@ -430,22 +431,31 @@ bool build(const Paths &paths, const GameConfig &config, const std::string &iso,
     progress.fraction = 0.20f;
 
     progress.status("Translating the vector unit programs");
-    const auto recipes = read_vu_recipe(tools / "config" / "vu1.txt");
-    for (const VuRecipe &r : recipes) {
-        std::vector<std::uint8_t> image(kVuImageSize, 0);
-        for (const auto &c : r.chunks) {
-            if (c.vu + c.size > image.size() || c.elf + c.size > elf.size()) return fail("bad VU recipe for " + r.file);
-            std::memcpy(image.data() + c.vu, elf.data() + c.elf, c.size);
+    // Each unit's microcode images, rebuilt from the executable by its recipe, then translated.
+    // vurecomp runs for VU0 even with no images: game.dll always registers a VU0 table.
+    const auto translate_vu = [&](const char *recipe_file, std::size_t image_size, const fs::path &dir, bool vu0, std::size_t &count) {
+        const auto recipes = read_vu_recipe(tools / "config" / recipe_file);
+        fs::create_directories(dir, ec);
+        for (const VuRecipe &r : recipes) {
+            std::vector<std::uint8_t> image(image_size, 0);
+            for (const auto &c : r.chunks) {
+                if (c.vu + c.size > image.size() || c.elf + c.size > elf.size()) return std::string("bad VU recipe for ") + r.file;
+                std::memcpy(image.data() + c.vu, elf.data() + c.elf, c.size);
+            }
+            write_file(dir / r.file, image.data(), image.size());
         }
-        write_file(paths.game / "vu1" / r.file, image.data(), image.size());
-    }
-    if (!recipes.empty()) {
-        cmd = quote(tools / "vurecomp.exe") + L" " + quote(paths.game / "vu1") + L" " + quote(paths.game / "generated");
-        p = start(cmd, log);
-        if (!p) return fail("cannot start vurecomp.exe");
-        if (finish(p) != 0) return fail("vurecomp failed:\n" + tail(log, 15));
-    }
-    progress.line(std::to_string(recipes.size()) + " VU1 microcode images");
+        count = recipes.size();
+        if (recipes.empty() && !vu0) return std::string();
+        const std::wstring vu_cmd = quote(tools / "vurecomp.exe") + (vu0 ? L" --vu0 " : L" ") + quote(dir) + L" " + quote(paths.game / "generated");
+        HANDLE h = start(vu_cmd, log);
+        if (!h) return std::string("cannot start vurecomp.exe");
+        if (finish(h) != 0) return "vurecomp failed:\n" + tail(log, 15);
+        return std::string();
+    };
+    std::size_t vu1_images = 0, vu0_images = 0;
+    if (const std::string e = translate_vu("vu1.txt", kVuImageSize, paths.game / "vu1", false, vu1_images); !e.empty()) return fail(e);
+    if (const std::string e = translate_vu("vu0.txt", kVu0ImageSize, paths.game / "vu0", true, vu0_images); !e.empty()) return fail(e);
+    progress.line(std::to_string(vu1_images) + " VU1 and " + std::to_string(vu0_images) + " VU0 microcode images");
     progress.fraction = 0.22f;
 
     progress.status("Compiling the game code");
@@ -537,7 +547,7 @@ int write_vu_recipe(const fs::path &elf_path, const fs::path &vu1_dir, const fs:
         return 1;
     }
     std::ofstream out(out_path);
-    out << "# VU1 microcode images rebuilt from the boot executable: file vu:elf:size ... (hex)\n";
+    out << "# Vector unit microcode images rebuilt from the boot executable: file vu:elf:size ... (hex)\n";
     for (const auto &e : fs::directory_iterator(vu1_dir)) {
         if (e.path().extension() != ".bin") continue;
         std::vector<std::uint8_t> image;

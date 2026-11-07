@@ -1,8 +1,8 @@
 # Developer tool (replaces port.sh's exploring step, Windows only): runs the game headless,
 # collects the code addresses it reached that the static pass missed, adds them to
-# src\config\entries.txt, translates again and rebuilds, until a run finds nothing new. The VU1
-# microcode the runs record is turned into src\config\vu1.txt. Those two files are what the
-# launcher ships; the recorded images, the translated code and the disc's executable stay in
+# src\config\entries.txt, translates again and rebuilds, until a run finds nothing new. The VU1 and
+# VU0 microcode the runs record is turned into src\config\vu1.txt and vu0.txt. Those files are what
+# the launcher ships; the recorded images, the translated code and the disc's executable stay in
 # output\explore (ignored by git: they are the game's).
 #   src\scripts\explore.ps1 [-Frames 3600] [-Rounds 8] [-Press "300:start","600:cross",...]
 param(
@@ -23,14 +23,14 @@ $generated = Join-Path $dev "generated"
 $runner = Join-Path $build "CastlevaniaLoI.exe"
 $boot = ((Get-Content (Join-Path $config "game.txt")) -match '^boot=' -replace '^boot=', '').Trim()
 $elf = Join-Path $dev $boot
-New-Item -ItemType Directory -Force $dev, "$dev\vu1", "$dev\shots", $generated | Out-Null
+New-Item -ItemType Directory -Force $dev, "$dev\vu1", "$dev\vu0", "$dev\shots", $generated | Out-Null
 
 function Build-Dev([string]$Mode = "") {
     cmd /c "`"$PSScriptRoot\compile.cmd`" debug $Mode > `"$dev\build.log`" 2>&1"
     if ($LASTEXITCODE -ne 0) { Get-Content "$dev\build.log" -Tail 30; throw "build failed (output\explore\build.log)" }
 }
-# The CPU code, then the VU1 microcode in output\explore\vu1 (the same order as the launcher's
-# build): game.dll needs both translations to link.
+# The CPU code, then the VU1 and VU0 microcode in output\explore\vu1 and vu0 (the same order as
+# the launcher's build): game.dll needs all three translations to link (VU0's table even empty).
 function Translate {
     & "$build\eerecomp.exe" $elf --entries $entries --code-patches (Join-Path $config "code-patches.txt") --out $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
     if ($LASTEXITCODE -ne 0) { throw "eerecomp failed" }
@@ -38,6 +38,8 @@ function Translate {
         & "$build\vurecomp.exe" "$dev\vu1" $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
         if ($LASTEXITCODE -ne 0) { throw "vurecomp failed" }
     }
+    & "$build\vurecomp.exe" --vu0 "$dev\vu0" $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
+    if ($LASTEXITCODE -ne 0) { throw "vurecomp --vu0 failed" }
 }
 function Read-Tokens($file) {
     if (-not (Test-Path $file)) { return @() }
@@ -57,16 +59,20 @@ if (-not (Test-Path $elf)) {
 # The runtime only records microcode it has no compiled version of, and vurecomp rebuilds its table
 # from whatever is in the folder, so the folder starts with every known image, rebuilt from the recipe.
 $elfBytes = [IO.File]::ReadAllBytes($elf)
-foreach ($line in Get-Content (Join-Path $config "vu1.txt")) {
-    if (-not $line.Trim() -or $line.StartsWith('#')) { continue }
-    $words = $line.Trim() -split '\s+'
-    $image = New-Object byte[] 16384
-    foreach ($chunk in $words[1..($words.Count - 1)]) {
-        $vu, $at, $size = $chunk.Split(':') | ForEach-Object { [Convert]::ToInt32($_, 16) }
-        [Array]::Copy($elfBytes, $at, $image, $vu, $size)
+function Seed-Images([string]$Recipe, [string]$Dir, [int]$ImageSize) {
+    foreach ($line in Get-Content (Join-Path $config $Recipe)) {
+        if (-not $line.Trim() -or $line.StartsWith('#')) { continue }
+        $words = $line.Trim() -split '\s+'
+        $image = New-Object byte[] $ImageSize
+        foreach ($chunk in $words[1..($words.Count - 1)]) {
+            $vu, $at, $size = $chunk.Split(':') | ForEach-Object { [Convert]::ToInt32($_, 16) }
+            [Array]::Copy($elfBytes, $at, $image, $vu, $size)
+        }
+        [IO.File]::WriteAllBytes((Join-Path $Dir $words[0]), $image)
     }
-    [IO.File]::WriteAllBytes((Join-Path "$dev\vu1" $words[0]), $image)
 }
+Seed-Images "vu1.txt" "$dev\vu1" 16384
+Seed-Images "vu0.txt" "$dev\vu0" 4096
 
 if ($Press.Count -eq 0) {
     $Press = @("300:start") + (@(600..($Frames - 1)) | Where-Object { $_ % 300 -eq 0 } | ForEach-Object { "${_}:cross" })
@@ -80,11 +86,12 @@ for ($round = 1; $round -le $Rounds; $round++) {
     Remove-Item "$dev\misses.txt", "$dev\explore.ps2" -ErrorAction SilentlyContinue
     Remove-Item "$dev\shots\*" -ErrorAction SilentlyContinue
     $env:PS2_VU_RECORD = "$dev\vu1"
+    $env:PS2_VU0_RECORD = "$dev\vu0"
     $env:PS2_GPU_LOW_POWER = "1"
     # The runner is a windowed program: piping its output is what makes PowerShell wait for it.
     & $runner $elf --disc $Iso --misses "$dev\misses.txt" --memcard "$dev\explore.ps2" --frames $Frames @pressArgs `
         --frames-dir "$dev\shots" --frame-every 300 2>&1 | ForEach-Object { "$_" } | Set-Content "$dev\explore.log"
-    Remove-Item Env:PS2_VU_RECORD, Env:PS2_GPU_LOW_POWER
+    Remove-Item Env:PS2_VU_RECORD, Env:PS2_VU0_RECORD, Env:PS2_GPU_LOW_POWER
     $halt = Select-String -Path "$dev\explore.log" -Pattern '^\[ee\] halted: (.*)' | Select-Object -First 1
     $reason = if ($halt) { $halt.Matches[0].Groups[1].Value } else { "" }
     $known = @(Read-Tokens $entries)
@@ -101,5 +108,10 @@ if (Get-ChildItem "$dev\vu1\*.bin" -ErrorAction SilentlyContinue) {
     & $runner --dev-vu-recipe $elf "$dev\vu1" (Join-Path $config "vu1.txt") 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "VU recipe failed" }
 }
+& "$build\vurecomp.exe" --vu0 "$dev\vu0" $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
+if (Get-ChildItem "$dev\vu0\*.bin" -ErrorAction SilentlyContinue) {
+    & $runner --dev-vu-recipe $elf "$dev\vu0" (Join-Path $config "vu0.txt") 2>&1 | ForEach-Object { "$_" }
+    if ($LASTEXITCODE -ne 0) { throw "VU0 recipe failed" }
+}
 Build-Dev
-"Done: src\config\entries.txt and vu1.txt updated; frames of the last run in output\explore\shots, its log in output\explore\explore.log"
+"Done: src\config\entries.txt, vu1.txt and vu0.txt updated; frames of the last run in output\explore\shots, its log in output\explore\explore.log"
