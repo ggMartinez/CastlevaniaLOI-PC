@@ -1,0 +1,13 @@
+# Code patches the translator builds in both ways, switched at run time (eerecomp --code-patches).
+# A translated game cannot be patched by writing its memory, as PCSX2 does, so each patched
+# instruction is translated as it is and as patched, and the runtime picks one.
+#   switch  address   original  replacement   (hex)
+#
+# widescreen: on with the launcher's widescreen option (--widescreen), which also shows the picture
+# at 16:9. From PCSX2's "Widescreen 16:9" patch for SLUS-20733 (CRC 28270F7D), pcsx2_patches.
+# Gameplay hack by arapapa:
+widescreen 00712378 3C014420 3C014455   # lui at,0x4455: 3D projection width 640.0 -> 852.0 (zoom)
+widescreen 00712398 3C013B00 3C013AC0   # lui at,0x3AC0: vertical field of view
+# Movie fix by nemesis2000: keeps movies 4:3, pillarboxed, in the 16:9 picture.
+widescreen 004511D0 240574C0 24057300   # addiu a1,zero,0x7300: y position
+widescreen 004511DC 24071400 24071B00   # addiu a3,zero,0x1B00: height

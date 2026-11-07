@@ -39,6 +39,10 @@ The launcher identifies the disc by its boot executable (`SLUS_207.33`, SHA-1
    game's code to C++ and compiles it into `game.dll`, with progress and a log.
 5. Set **Fullscreen**, **Widescreen** and the internal resolution (1x–3x) if you like, then **Play**.
 
+**Widescreen** is real 16:9: the 3D view gets wider instead of stretched (PCSX2's widescreen
+patch by arapapa, with nemesis2000's fix that keeps movies 4:3). The HUD and menus are still drawn
+for 4:3 and come out stretched. Switching it needs no new build.
+
 The launcher remembers your disc and goes straight to *Play* after that. After an update of the
 port, it asks you to build the game again: the new version needs a `game.dll` made for it.
 
@@ -107,7 +111,10 @@ your disc ──► launcher ──► eerecomp ──► C++ ──► clang �
   `compiler\` folder.
 - **The game's configuration** (`src\config\`) is what this port knows about the disc: its hash,
   the code entry points that static analysis misses, and a recipe that rebuilds the VU1 microcode
-  images out of the disc's own executable, so no game bytes are ever stored here.
+  images out of the disc's own executable, so no game bytes are ever stored here. It also lists
+  code patches (`code-patches.txt`, like PCSX2's `.pnach` ones): a translated game cannot be
+  patched by writing its memory, so the translator builds each patched instruction both ways and
+  the runtime picks one, here the widescreen patch when Widescreen is on.
 
 ## Building from source
 
@@ -188,7 +195,7 @@ they are the game's.
 build.bat, clean-build.bat, release.bat
                          the build entry points
 src\launcher\            the launcher and the game builder (launcher.cpp, builder.cpp)
-src\config\              what the port knows about the disc: hash, entry points, VU1 recipe
+src\config\              what the port knows about the disc: hash, entry points, VU1 recipe, code patches
 src\patches\             this port's changes to ps2-web-recomp
 src\scripts\             compile.cmd, assemble.ps1, fetch-tools.ps1, update-patch.ps1, explore.ps1
 src\cmake\               the CMake toolchain file for llvm-mingw

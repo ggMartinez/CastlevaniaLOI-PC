@@ -36,7 +36,7 @@ if ($Pdb) { Copy-Item (Join-Path $Build "eerecomp.pdb"), (Join-Path $Build "vure
 Copy-Item (Join-Path $Build "libCastlevaniaLoI.dll.a") "$compiler\ps2"
 Copy-Item (Join-Path $recomp "host\game_entry.cpp") "$compiler\ps2"
 Copy-Tree (Join-Path $recomp "runtime\include") "$compiler\ps2\include"
-Copy-Item (Join-Path $config "game.txt"), (Join-Path $config "entries.txt"), (Join-Path $config "vu1.txt") "$compiler\config"
+Copy-Item (Join-Path $config "game.txt"), (Join-Path $config "entries.txt"), (Join-Path $config "vu1.txt"), (Join-Path $config "code-patches.txt") "$compiler\config"
 
 # llvm-mingw, x86_64 only: the compiler driver, lld, their DLLs and config, headers, libraries
 $bin = "x86_64-w64-mingw32-clang++.exe", "x86_64-w64-mingw32-clang.exe", "clang.exe", "clang++.exe", "clang-23.exe",

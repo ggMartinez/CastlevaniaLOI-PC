@@ -576,6 +576,166 @@ index 984d4d6..3ba4287 100644
      start = now;
      frames = 0;
      emu_start = emu;
+diff --git a/recomp/codegen.cpp b/recomp/codegen.cpp
+index 47079a1..d6f5d91 100644
+--- a/recomp/codegen.cpp
++++ b/recomp/codegen.cpp
+@@ -217,7 +217,7 @@ private:
+             const Insn i = at(a);
+             const Flow fl = flow(i.op);
+             if (fl == Flow::None) {
+-                simple(i);
++                emit_simple(i);
+                 ++pending_;
+                 falls = true;
+             } else if (i.op == Eret) {
+@@ -307,7 +307,7 @@ private:
+             return std::format("stop(c, {}, \"unsupported delay slot\"); return;", pc(ds.pc));
+         std::string text;
+         capture_ = &text;
+-        simple(ds);
++        emit_simple(ds);
+         capture_ = nullptr;
+         return text;
+     }
+@@ -405,6 +405,23 @@ private:
+ 
+     std::string bcv(const Insn &i) { return std::format("{}.w[{}]", vf(i.ft()), i.bc()); }
+ 
++    // simple(), or for a code patch both versions behind the runtime's switch.
++    void emit_simple(const Insn &i) {
++        const auto it = options_.code_patches.find(i.pc);
++        if (it == options_.code_patches.end()) {
++            simple(i);
++            return;
++        }
++        std::string *const outer = capture_;
++        std::string on, off;
++        capture_ = &on;
++        simple(decode(it->second.word, i.pc));
++        capture_ = &off;
++        simple(i);
++        capture_ = outer;
++        line(std::format("if (ps2::code_patch_on({}u)) {{ {}}} else {{ {}}}", it->second.flag, on, off));
++    }
++
+     void simple(const Insn &i) {
+         const std::uint32_t rs = i.rs(), rt = i.rt(), rd = i.rd(), sa = i.sa();
+         const std::uint32_t fsf = (i.word >> 21) & 3u, ftf = (i.word >> 23) & 3u;
+diff --git a/recomp/codegen.hpp b/recomp/codegen.hpp
+index e54ee19..a2678c1 100644
+--- a/recomp/codegen.hpp
++++ b/recomp/codegen.hpp
+@@ -5,6 +5,7 @@
+ #include "snr2.hpp"
+ 
+ #include <cstdint>
++#include <map>
+ #include <set>
+ #include <string>
+ #include <utility>
+@@ -12,10 +13,19 @@
+ 
+ namespace recomp {
+ 
++// An instruction the game's code can have replaced at run time (a PCSX2-style code patch, which
++// a translated program cannot take by writing memory): both versions are emitted, and the one
++// that runs is chosen by the runtime's switch for `flag` (see ps2::code_patch_on).
++struct CodePatch {
++    std::uint32_t word;
++    std::uint32_t flag;
++};
++
+ struct CodegenOptions {
+     std::string output;
+     std::uint32_t unit_bits = 14;
+     std::set<std::uint32_t> probes;
++    std::map<std::uint32_t, CodePatch> code_patches;
+ };
+ 
+ struct Translation {
+diff --git a/recomp/main.cpp b/recomp/main.cpp
+index 52faafe..3607b9a 100644
+--- a/recomp/main.cpp
++++ b/recomp/main.cpp
+@@ -9,10 +9,13 @@
+ #include <cstring>
+ #include <deque>
+ #include <filesystem>
++#include <format>
+ #include <fstream>
+ #include <iterator>
+ #include <map>
+ #include <set>
++#include <sstream>
++#include <stdexcept>
+ #include <string>
+ #include <vector>
+ 
+@@ -151,15 +154,45 @@ std::vector<std::pair<std::uint32_t, std::uint32_t>> checks_for_window(const Snr
+ }
+ 
+ int usage() {
+-    std::fprintf(stderr, "usage: eerecomp <elf> [--entries file] [--modules dir] [--overlays dir] [--probes file] [--out dir] [--stats]\n");
++    std::fprintf(stderr, "usage: eerecomp <elf> [--entries file] [--modules dir] [--overlays dir] [--probes file] [--code-patches file] [--out dir] [--stats]\n");
+     return 2;
+ }
+ 
+ }
+ 
++// Code patches: "name address original replacement" per line (hex words), # comments. The
++// original must be what the executable has there, and both must be plain instructions (no
++// branch or jump), so that either can be emitted in place, delay slots included.
++std::map<std::uint32_t, CodePatch> read_code_patches(const std::string &path, const Image &image, const Program &program) {
++    static const char *const kFlags[] = {"widescreen"};  // ps2::code_patch_on's bits, in order
++    std::ifstream in(path);
++    if (!in) throw std::runtime_error("cannot read " + path);
++    std::map<std::uint32_t, CodePatch> out;
++    std::string line;
++    while (std::getline(in, line)) {
++        if (const auto hash = line.find('#'); hash != std::string::npos) line.resize(hash);
++        std::istringstream words(line);
++        std::string name;
++        std::uint32_t address = 0, original = 0, replacement = 0;
++        if (!(words >> name)) continue;
++        if (!(words >> std::hex >> address >> original >> replacement)) throw std::runtime_error("bad code patch line: " + line);
++        std::uint32_t flag = 0;
++        while (flag < std::size(kFlags) && name != kFlags[flag]) ++flag;
++        if (flag == std::size(kFlags)) throw std::runtime_error("unknown code patch switch " + name);
++        const auto word = image.word(address);
++        if (!word || *word != original || !program.is_code(address))
++            throw std::runtime_error(std::format("code patch at 0x{:08X}: the executable has no such instruction there", address));
++        if (flow(decode(original, address).op) != Flow::None || flow(decode(replacement, address).op) != Flow::None)
++            throw std::runtime_error(std::format("code patch at 0x{:08X}: only plain instructions can be patched", address));
++        if (replacement != original) out[address] = CodePatch{replacement, flag};
++    }
++    std::printf("%zu code patches\n", out.size());
++    return out;
++}
++
+ int main(int argc, char **argv) {
+     if (argc < 2) return usage();
+-    std::string elf_path = argv[1], entries_path, out, probes_path, modules_dir, overlays_dir;
++    std::string elf_path = argv[1], entries_path, out, probes_path, modules_dir, overlays_dir, code_patches_path;
+     bool stats = false;
+     for (int i = 2; i < argc; ++i) {
+         const std::string arg = argv[i];
+@@ -167,6 +200,7 @@ int main(int argc, char **argv) {
+         else if (arg == "--stats") stats = true;
+         else if (arg == "--out" && i + 1 < argc) out = argv[++i];
+         else if (arg == "--probes" && i + 1 < argc) probes_path = argv[++i];
++        else if (arg == "--code-patches" && i + 1 < argc) code_patches_path = argv[++i];
+         else if (arg == "--modules" && i + 1 < argc) modules_dir = argv[++i];
+         else if (arg == "--overlays" && i + 1 < argc) overlays_dir = argv[++i];
+         else return usage();
+@@ -289,6 +323,7 @@ int main(int argc, char **argv) {
+             options.output = out;
+             if (!probes_path.empty())
+                 for (std::uint32_t a : read_entries(probes_path).main) options.probes.insert(a);
++            if (!code_patches_path.empty()) options.code_patches = read_code_patches(code_patches_path, image, program);
+             generate(translations, options);
+         }
+     } catch (const std::exception &error) {
 diff --git a/recomp/vurecomp.cpp b/recomp/vurecomp.cpp
 index a7e0785..918cb85 100644
 --- a/recomp/vurecomp.cpp
@@ -610,6 +770,22 @@ index a7e0785..918cb85 100644
          for (std::uint32_t target : targets) {
              const std::uint64_t key = ps2::vu::program_key(programs[i].code.data(), ps2::vu::reachable(programs[i].code.data(), kMask, target), target);
              if (ps2::vu::branch_in_delay_slot(programs[i].code.data(), kMask, target)) continue;
+diff --git a/runtime/include/ps2/generated.hpp b/runtime/include/ps2/generated.hpp
+index 45ff208..3f6b54b 100644
+--- a/runtime/include/ps2/generated.hpp
++++ b/runtime/include/ps2/generated.hpp
+@@ -10,6 +10,11 @@
+ 
+ namespace ps2 {
+ 
++// Code patches the translator emitted both ways (eerecomp --code-patches): bit n is on when the
++// patch switch n is (0: widescreen, from --widescreen).
++extern PS2_RUNTIME_DATA std::uint32_t g_code_patches;
++inline bool code_patch_on(std::uint32_t flag) { return (g_code_patches >> flag) & 1u; }
++
+ using UnitFn = void (*)(Cpu &, std::uint32_t entry, std::uint32_t depth);
+ 
+ inline constexpr std::uint32_t kMaxDepth = 192;
 diff --git a/runtime/include/ps2/memory.hpp b/runtime/include/ps2/memory.hpp
 index 6a919d2..efd4b09 100644
 --- a/runtime/include/ps2/memory.hpp
@@ -1209,11 +1385,31 @@ index 3024df3..0d20ce8 100644
  }
  
  void fire_alarm(int id);
+diff --git a/runtime/src/memory.cpp b/runtime/src/memory.cpp
+index 7a0699c..d8db52c 100644
+--- a/runtime/src/memory.cpp
++++ b/runtime/src/memory.cpp
+@@ -15,6 +15,7 @@ alignas(64) std::uint8_t g_vu0_code[4096];
+ alignas(64) std::uint8_t g_vu0_mem[4096];
+ alignas(64) std::uint8_t g_vu1_code[16384];
+ alignas(64) std::uint8_t g_vu1_mem[16384];
++std::uint32_t g_code_patches = 0;
+ 
+ namespace {
+ 
 diff --git a/runtime/src/system.cpp b/runtime/src/system.cpp
-index 86f8ca9..8915365 100644
+index 86f8ca9..d3f3332 100644
 --- a/runtime/src/system.cpp
 +++ b/runtime/src/system.cpp
-@@ -637,6 +637,7 @@ bool parse_axis(const std::string &spec, AxisPress &press) {
+@@ -410,6 +410,7 @@ void request_iop_sync() {
+ 
+ void boot(std::uint32_t entry, const std::vector<std::string> &args) {
+     init_watch();
++    g_code_patches = g_options.widescreen ? 1u : 0u;
+     hw::reset();
+     kernel::reset();
+     if (!g_options.disc_path.empty() && !disc::open(g_options.disc_path))
+@@ -637,6 +638,7 @@ bool parse_axis(const std::string &spec, AxisPress &press) {
  }
  
  double gpu_busy_ms() { return gs::gpu_busy_ms(); }

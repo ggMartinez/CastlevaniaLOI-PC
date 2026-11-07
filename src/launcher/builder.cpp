@@ -327,7 +327,7 @@ bool build(const Paths &paths, const GameConfig &config, const std::string &iso,
     progress.status("Translating the game's code to C++");
     const fs::path tools = paths.compiler;
     std::wstring cmd = quote(tools / "eerecomp.exe") + L" " + quote(paths.game / boot) + L" --entries " + quote(tools / "config" / "entries.txt") +
-                       L" --out " + quote(paths.game / "generated");
+                       L" --code-patches " + quote(tools / "config" / "code-patches.txt") + L" --out " + quote(paths.game / "generated");
     HANDLE p = start(cmd, log);
     if (!p) return fail("cannot start eerecomp.exe");
     if (finish(p) != 0) return fail("eerecomp failed:\n" + tail(log, 15));

@@ -32,7 +32,7 @@ function Build-Dev([string]$Mode = "") {
 # The CPU code, then the VU1 microcode in output\explore\vu1 (the same order as the launcher's
 # build): game.dll needs both translations to link.
 function Translate {
-    & "$build\eerecomp.exe" $elf --entries $entries --out $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
+    & "$build\eerecomp.exe" $elf --entries $entries --code-patches (Join-Path $config "code-patches.txt") --out $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
     if ($LASTEXITCODE -ne 0) { throw "eerecomp failed" }
     if (Get-ChildItem "$dev\vu1\*.bin" -ErrorAction SilentlyContinue) {
         & "$build\vurecomp.exe" "$dev\vu1" $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
