@@ -10,28 +10,30 @@ The parts are listed from easiest to hardest to make native. Status:
 - **To do**: planned.
 - **Later**: not worth doing now; the reason is in its notes.
 
-| # | Part | PS2 hardware | Status |
-|---|---|---|---|
-| — | [Game code](#game-code) | EE CPU, VU1 microcode | Done |
-| 1 | [Memory card](#1-memory-card) | SIO2, MCMAN/MCSERV.IRX | Later |
-| 2 | [Controller](#2-controller) | SIO2, PADMAN.IRX | Later |
-| 3 | [Disc drive](#3-disc-drive) | CDVD | Done |
-| 4 | [Movies](#4-movies) | IPU, `.PSS` files | To do |
-| 5 | [Kernel threads](#5-kernel-threads) | EE kernel | Later |
-| 6 | [Sound](#6-sound) | SPU2, IOP | In progress |
-| 7 | [VU0 microprograms](#7-vu0-microprograms) | VU0 | Done |
-| 8 | [Rendering](#8-rendering) | GS, VIF/GIF, VU1 output | To do |
+Each part's percentage is an estimate of how much of the way to its native goal is done.
+
+| # | Part | PS2 hardware | Status | Progress |
+|---|---|---|---|---|
+| — | [Game code](#game-code) | EE CPU, VU1 microcode | Done | 100% |
+| 1 | [Memory card](#1-memory-card) | SIO2, MCMAN/MCSERV.IRX | Later | 40% |
+| 2 | [Controller](#2-controller) | SIO2, PADMAN.IRX | Later | 40% |
+| 3 | [Disc drive](#3-disc-drive) | CDVD | Done | 100% |
+| 4 | [Movies](#4-movies) | IPU, `.PSS` files | To do | 0% |
+| 5 | [Kernel threads](#5-kernel-threads) | EE kernel | Later | 80% |
+| 6 | [Sound](#6-sound) | SPU2, IOP | In progress | 50% |
+| 7 | [VU0 microprograms](#7-vu0-microprograms) | VU0 | Done | 100% |
+| 8 | [Rendering](#8-rendering) | GS, VIF/GIF, VU1 output | To do | 0% |
 
 Last updated: 2026-11-07.
 
 ## Game code
 
-**Done.** The Emotion Engine's MIPS code is translated to C++ by `eerecomp` and the VU1 microcode by `vurecomp`, both
+**Done, 100%.** The Emotion Engine's MIPS code is translated to C++ by `eerecomp` and the VU1 microcode by `vurecomp`, both
 compiled into `game.dll` on the player's PC.
 
 ## 1. Memory card
 
-**Later.**
+**Later, 40%.**
 
 - **Today:** the game's memory card drivers (MCMAN/MCSERV.IRX) run as translated native code on the IOP, on a
   simulated 8 MB card file (`saves\memcard1.ps2`).
@@ -40,7 +42,7 @@ compiled into `game.dll` on the player's PC.
 
 ## 2. Controller
 
-**Later.**
+**Later, 40%.**
 
 - **Today:** the game's pad driver (PADMAN.IRX) runs as translated native code on the IOP, reading a simulated
   DualShock 2 fed by SDL.
@@ -49,7 +51,7 @@ compiled into `game.dll` on the player's PC.
 
 ## 3. Disc drive
 
-**Done.**
+**Done, 100%.**
 
 - **Today:** the build copies the disc's files into `game\data`. Reads by sector are plain file reads, with no drive
   timing, and the disc image is no longer needed after the build.
@@ -57,7 +59,7 @@ compiled into `game.dll` on the player's PC.
 
 ## 4. Movies
 
-**To do.**
+**To do, 0%.**
 
 - **Today:** the 32 `.PSS` movies (MPEG-2) are decoded by an emulated IPU.
 - **Native goal:** decode them with a native MPEG-2 decoder at the game's movie player.
@@ -65,14 +67,14 @@ compiled into `game.dll` on the player's PC.
 
 ## 5. Kernel threads
 
-**Later.**
+**Later, 80%.**
 
 - **Today:** system calls (threads, semaphores, interrupts) are reimplemented in native code, not run.
 - **Notes:** little to gain: the scheduler is already lightweight native code.
 
 ## 6. Sound
 
-**In progress.**
+**In progress, 50%.**
 
 1. **Done: the IOP's modules run natively.** `ioprecomp` translates the IOP modules to C++:
    - Konami's sound driver, Sony's sound library, the MIDI sequencer and the disc streamer;
@@ -101,7 +103,7 @@ compiled into `game.dll` on the player's PC.
 
 ## 7. VU0 microprograms
 
-**Done.**
+**Done, 100%.**
 
 - **Today:** VU0 microprograms are compiled to C++ by `vurecomp --vu0` and run natively: 42 programs rebuilt from the
   executable (`src\config\vu0.txt`). Code not recorded yet falls back to the interpreter; `explore.ps1` records any
@@ -113,7 +115,7 @@ compiled into `game.dll` on the player's PC.
 
 ## 8. Rendering
 
-**To do**, last.
+**To do, 0%**, last.
 
 - **Today:** the GS is emulated on the GPU with compute shaders, fed by emulated VIF and GIF paths.
 - **Native goal:** capture what the game draws and issue native Direct3D or Vulkan draws, matching its GS tricks
