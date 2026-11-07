@@ -251,7 +251,7 @@ index 2fdf426..292cb26 100644
          std::uint32_t entry = 0;
          if (!ps2::load_elf(argv[1], entry)) {
 diff --git a/host/window.cpp b/host/window.cpp
-index 984d4d6..b6a79ae 100644
+index 984d4d6..3ba4287 100644
 --- a/host/window.cpp
 +++ b/host/window.cpp
 @@ -1,11 +1,18 @@
@@ -446,7 +446,43 @@ index 984d4d6..b6a79ae 100644
          if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F11 && !e.key.repeat) {
              const bool full = SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN;
              SDL_SetWindowFullscreen(g_window, full ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
-@@ -288,9 +440,16 @@ void pace() {
+@@ -269,28 +421,41 @@ struct PaceTimer {
+     }
+ };
+ 
++// Paces emulation to the PS2's refresh rate (59.94 Hz NTSC, 50 Hz PAL) on a precise clock, so
++// frames come out evenly. Waiting on the audio queue instead released frames in bursts (the
++// device takes sound in chunks of ~20 ms or more): 60 fps on average, but two frames 2 ms apart
++// and then none for 60 ms, which looks like heavy frame skipping. Audio now only trims the rate,
++// by up to 1%, to keep about 60 ms of sound queued.
+ void pace() {
+     const PaceTimer timer;
++    const double frequency = static_cast<double>(SDL_GetPerformanceFrequency());
++    double hz = ps2::g_options.pal ? 50.0 : 59.94;
+     if (g_audio) {
+-        // The audio device clock paces emulation: wait while more than ~80 ms of sound is queued.
+-        while (SDL_GetQueuedAudioSize(g_audio) > 80 * kAudioBytesPerMs) SDL_Delay(1);
+-        return;
++        const double queued = SDL_GetQueuedAudioSize(g_audio) / static_cast<double>(kAudioBytesPerMs);
++        hz *= 1.0 + std::clamp((60.0 - queued) / 60.0, -1.0, 1.0) * 0.01;
+     }
+-    const std::uint64_t frequency = SDL_GetPerformanceFrequency();
+-    const std::uint64_t period = frequency / (ps2::g_options.pal ? 50 : 60);
++    const auto period = static_cast<std::uint64_t>(frequency / hz);
+     const std::uint64_t now = SDL_GetPerformanceCounter();
+-    if (g_last && now - g_last < period) {
+-        SDL_Delay(static_cast<Uint32>((period - (now - g_last)) * 1000 / frequency));
+-        g_last += period;
+-    } else {
+-        g_last = now;
+-    }
++    // More than two frames late (a load, a stall): start over rather than rush to catch up.
++    if (!g_last || now > g_last + 2 * period) g_last = now;
++    g_last += period;
++    // Sleep while the deadline is more than ~2 ms away (Windows sleeps in 1 ms steps), then spin.
++    const auto margin = static_cast<std::uint64_t>(frequency * 0.002);
++    while (SDL_GetPerformanceCounter() + margin < g_last) SDL_Delay(1);
++    while (SDL_GetPerformanceCounter() < g_last) std::this_thread::yield();
  }
  
  double process_cpu_seconds() {
@@ -463,7 +499,7 @@ index 984d4d6..b6a79ae 100644
  }
  
  double resident_mb() {
-@@ -300,15 +459,22 @@ double resident_mb() {
+@@ -300,15 +465,22 @@ double resident_mb() {
      if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&task), &count) != KERN_SUCCESS) return 0.0;
      return static_cast<double>(task.resident_size) / (1024.0 * 1024.0);
  #endif
@@ -486,14 +522,44 @@ index 984d4d6..b6a79ae 100644
      static std::uint64_t start = 0, frames = 0;
      static double cpu_start = 0.0, gpu_start = 0.0, emu_start = 0.0, vu_start = 0.0, gs_start = 0.0;
      static std::uint64_t interpreted_start = 0;
-@@ -338,6 +504,23 @@ void show_speed() {
+@@ -324,6 +496,17 @@ void show_speed() {
+         interpreted_start = ps2::vu1_interpreted_calls();
+     }
+     ++frames;
++    // The shortest and longest wait between two shown frames: about 16.7 ms both when smooth.
++    static std::uint64_t last_frame = 0;
++    static double gap_min = 1e9, gap_max = 0.0;
++    static int late = 0;
++    if (last_frame) {
++        const double gap = static_cast<double>(now - last_frame) * 1000.0 / static_cast<double>(SDL_GetPerformanceFrequency());
++        gap_min = std::min(gap_min, gap);
++        gap_max = std::max(gap_max, gap);
++        if (gap > 25.0) ++late;
++    }
++    last_frame = now;
+     const double seconds = static_cast<double>(now - start) / static_cast<double>(SDL_GetPerformanceFrequency());
+     if (seconds < 1.0) return;
+     const double cpu = process_cpu_seconds(), gpu = ps2::gpu_busy_ms(), emu = emu_idle(), vu = ps2::vu_thread_idle_ms(), gs = ps2::thread_waited_ms(2);
+@@ -333,11 +516,35 @@ void show_speed() {
+     std::snprintf(title, sizeof title, "ps2-web-recomp  %.1f fps  CPU %.0f%%  GPU %.0f%%  idle emu %.0f%% vu %.0f%% gs %.0f%%  RAM %.0f MB  audio %.0f ms",
+                   static_cast<double>(frames) / seconds, (cpu - cpu_start) / seconds * 100.0, (gpu - gpu_start) / (seconds * 10.0),
+                   (emu - emu_start) / (seconds * 10.0), (vu - vu_start) / (seconds * 10.0), (gs - gs_start) / (seconds * 10.0), resident_mb(), queued);
++    {
++        const std::size_t used = std::strlen(title);
++        std::snprintf(title + used, sizeof title - used, "  frame %.1f-%.1f ms, %d late", gap_min, gap_max, late);
++    }
+     if (interpreted > interpreted_start) {
+         const std::size_t used = std::strlen(title);
          std::snprintf(title + used, sizeof title - used, "  vu1 interpreted %.0f/s", static_cast<double>(interpreted - interpreted_start) / seconds);
      }
      SDL_SetWindowTitle(g_window, title);
 +    char line[128];
 +    g_stats_lines.clear();
-+    std::snprintf(line, sizeof line, "FPS   %.1f", static_cast<double>(frames) / seconds);
++    std::snprintf(line, sizeof line, "FPS   %.1f   frame %.1f-%.1f ms", static_cast<double>(frames) / seconds, gap_min, gap_max);
 +    g_stats_lines.push_back({line, 0xFFFFFF});
++    gap_min = 1e9;
++    gap_max = 0.0;
++    late = 0;
 +    std::snprintf(line, sizeof line, "CPU   %.0f%%   GPU %.0f%%", (cpu - cpu_start) / seconds * 100.0, (gpu - gpu_start) / (seconds * 10.0));
 +    g_stats_lines.push_back({line, 0xFFFFFF});
 +    std::snprintf(line, sizeof line, "Idle  emu %.0f%%  vu %.0f%%  gs %.0f%%", (emu - emu_start) / (seconds * 10.0), (vu - vu_start) / (seconds * 10.0),
@@ -699,7 +765,7 @@ index b5e54c8..7ff9902 100644
  #include <vector>
  
 diff --git a/runtime/src/gs/gpu/gpu.cpp b/runtime/src/gs/gpu/gpu.cpp
-index 5a13c3e..8c068b9 100644
+index 5a13c3e..4f96b93 100644
 --- a/runtime/src/gs/gpu/gpu.cpp
 +++ b/runtime/src/gs/gpu/gpu.cpp
 @@ -15,6 +15,7 @@
@@ -710,7 +776,7 @@ index 5a13c3e..8c068b9 100644
  #include <string>
  #include <unordered_map>
  
-@@ -52,6 +53,16 @@ std::uint32_t g_surface_width = 0, g_surface_height = 0;
+@@ -52,9 +53,20 @@ std::uint32_t g_surface_width = 0, g_surface_height = 0;
  WGPURenderPipeline g_blit = nullptr;
  WGPUBindGroup g_blit_group = nullptr;
  WGPUBuffer g_blit_params = nullptr;
@@ -727,7 +793,11 @@ index 5a13c3e..8c068b9 100644
  std::uint32_t g_field = 0, g_last_width = 0, g_last_height = 0;
  bool g_have_previous = false;
  std::uint32_t g_scale = 1, g_copy_words = 1u << 20, g_field_words = 1u << 19;
-@@ -979,6 +990,12 @@ void submit(WGPUTextureView present_view = nullptr) {
++bool g_high_color = true;
+ 
+ std::uint32_t field_base(std::uint32_t field) { return g_copy_words + (field & 1u) * g_field_words; }
+ 
+@@ -979,6 +991,12 @@ void submit(WGPUTextureView present_view = nullptr) {
          wgpuRenderPassEncoderSetPipeline(rp, g_blit);
          wgpuRenderPassEncoderSetBindGroup(rp, 0, g_blit_group, 0, nullptr);
          wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
@@ -740,7 +810,39 @@ index 5a13c3e..8c068b9 100644
          wgpuRenderPassEncoderEnd(rp);
          wgpuRenderPassEncoderRelease(rp);
      }
-@@ -1698,6 +1715,102 @@ void configure_surface() {
+@@ -1246,7 +1264,11 @@ bool init(Mode m) {
+     g_tile_count.assign(static_cast<std::size_t>(g_tiles_per_row) * g_tiles_per_row, 0);
+     g_tile_fill.assign(static_cast<std::size_t>(g_tiles_per_row) * g_tiles_per_row, 0);
+     g_field_words = (1u << 19) * g_scale * g_scale;
+-    g_vram = make_buffer(static_cast<std::uint64_t>(kMemorySize) * g_scale * g_scale, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
++    // High color (see gs.wgsl) keeps a full colour for each 16-bit pixel past the GS memory:
++    // two words per GS word. PS2_EXACT_COLOR=1 shows 16-bit buffers as the PS2 stores them.
++    g_high_color = std::getenv("PS2_EXACT_COLOR") == nullptr;
++    g_vram = make_buffer(static_cast<std::uint64_t>(kMemorySize) * g_scale * g_scale * (g_high_color ? 3u : 1u),
++                         WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
+     std::vector<std::uint32_t> tables;
+     swizzle_tables(tables);
+     g_tables = make_buffer(tables.size() * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst);
+@@ -1298,11 +1320,13 @@ bool init(Mode m) {
+         cd.layout = g_pipeline_layout;
+         cd.compute.module = module;
+         cd.compute.entryPoint = view(kEntryPoints[i]);
+-        WGPUConstantEntry constant = WGPU_CONSTANT_ENTRY_INIT;
+-        constant.key = view("SCALE");
+-        constant.value = static_cast<double>(g_scale);
+-        cd.compute.constantCount = 1;
+-        cd.compute.constants = &constant;
++        WGPUConstantEntry constants[2] = {WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT};
++        constants[0].key = view("SCALE");
++        constants[0].value = static_cast<double>(g_scale);
++        constants[1].key = view("HIGH_COLOR");
++        constants[1].value = g_high_color ? 1.0 : 0.0;
++        cd.compute.constantCount = 2;
++        cd.compute.constants = constants;
+         g_pipelines[i] = wgpuDeviceCreateComputePipeline(g_device, &cd);
+         if (!g_pipelines[i]) return false;
+     }
+@@ -1698,6 +1722,102 @@ void configure_surface() {
      wgpuSurfaceConfigure(g_surface, &config);
  }
  
@@ -843,7 +945,7 @@ index 5a13c3e..8c068b9 100644
  bool attach_surface(const SurfaceTarget &target) {
      if (g_mode != Mode::primary || !g_device) return false;
      WGPUSurfaceDescriptor sd = WGPU_SURFACE_DESCRIPTOR_INIT;
-@@ -1709,7 +1822,12 @@ bool attach_surface(const SurfaceTarget &target) {
+@@ -1709,7 +1829,12 @@ bool attach_surface(const SurfaceTarget &target) {
      WGPUSurfaceSourceXlibWindow xlib = WGPU_SURFACE_SOURCE_XLIB_WINDOW_INIT;
      WGPUSurfaceSourceWaylandSurface wayland = WGPU_SURFACE_SOURCE_WAYLAND_SURFACE_INIT;
      WGPUSurfaceSourceMetalLayer metal = WGPU_SURFACE_SOURCE_METAL_LAYER_INIT;
@@ -857,7 +959,7 @@ index 5a13c3e..8c068b9 100644
          metal.layer = target.surface;
          sd.nextInChain = &metal.chain;
      } else if (target.kind == SurfaceTarget::X11) {
-@@ -1796,6 +1914,7 @@ bool attach_surface(const SurfaceTarget &target) {
+@@ -1796,6 +1921,7 @@ bool attach_surface(const SurfaceTarget &target) {
      bd.entries = be;
      g_blit_group = wgpuDeviceCreateBindGroup(g_device, &bd);
      wgpuBindGroupLayoutRelease(layout);
@@ -865,7 +967,7 @@ index 5a13c3e..8c068b9 100644
      return g_blit != nullptr;
  }
  
-@@ -1804,6 +1923,8 @@ void resize_surface(std::uint32_t width, std::uint32_t height) {
+@@ -1804,6 +1930,8 @@ void resize_surface(std::uint32_t width, std::uint32_t height) {
      g_surface_width = width;
      g_surface_height = height;
      configure_surface();
@@ -874,7 +976,7 @@ index 5a13c3e..8c068b9 100644
  }
  
  bool has_surface() { return g_surface != nullptr; }
-@@ -1833,6 +1954,7 @@ bool present(const DisplaySource &src) {
+@@ -1833,6 +1961,7 @@ bool present(const DisplaySource &src) {
          configure_surface();
          return true;
      }
@@ -882,7 +984,7 @@ index 5a13c3e..8c068b9 100644
      WGPUTextureView target = wgpuTextureCreateView(st.texture, nullptr);
      submit(target);
  #ifndef __EMSCRIPTEN__
-@@ -1843,6 +1965,18 @@ bool present(const DisplaySource &src) {
+@@ -1843,6 +1972,18 @@ bool present(const DisplaySource &src) {
      return true;
  }
  
@@ -924,6 +1026,85 @@ index 734e4e4..5ed0b48 100644
  double busy_ms();
  void stats();
  
+diff --git a/runtime/src/gs/gpu/gs.wgsl b/runtime/src/gs/gpu/gs.wgsl
+index ac7b52e..8c910f3 100644
+--- a/runtime/src/gs/gpu/gs.wgsl
++++ b/runtime/src/gs/gpu/gs.wgsl
+@@ -12,6 +12,15 @@ struct Params {
+ @group(0) @binding(7) var<storage, read_write> decoded: array<u32>;
+ 
+ override SCALE: u32 = 1u;
++// High color, an addition to the GS: beside every 16-bit pixel the renderer draws, the vram buffer
++// keeps (past the GS memory) the 8-bit-per-channel colour it had before it was packed. The display
++// uses it while it still packs to the pixel in GS memory, so a picture drawn at full precision and
++// only stored in a 16-bit buffer is shown without the 5-bit banding; a pixel written any other way
++// (an upload, a copy) no longer matches and is shown as the PS2 has it. Drawing itself (blending,
++// textures) keeps reading the 16-bit pixel exactly: games count in it, like Castlevania: Lament of
++// Innocence's shadow volumes, which add and subtract in a 5-bit channel and rely on it wrapping.
++override HIGH_COLOR: u32 = 1u;
++const GS_WORDS: u32 = 1048576u;
+ 
+ const PSMCT32: u32 = 0x00u;
+ const PSMCT24: u32 = 0x01u;
+@@ -399,9 +408,16 @@ fn display(@builtin(global_invocation_id) gid: vec3<u32>) {
+     if (prm(7u) != 0u) {
+         sy = gid.y / 2u;
+     }
+-    var c = read_sample(psm, prm(0u), prm(1u), prm(3u) + gid.x / SCALE, prm(4u) + sy / SCALE, (sy % SCALE) * SCALE + gid.x % SCALE);
++    let dx = prm(3u) + gid.x / SCALE;
++    let dy = prm(4u) + sy / SCALE;
++    let dk = (sy % SCALE) * SCALE + gid.x % SCALE;
++    var c = read_sample(psm, prm(0u), prm(1u), dx, dy, dk);
+     if (psm == PSMCT16 || psm == PSMCT16S) {
+-        c = ((c & 0x1Fu) << 3u) | ((c & 0x3E0u) << 6u) | ((c & 0x7C00u) << 9u);
++        if (HIGH_COLOR != 0u) {
++            c = hc_color(locate(psm, prm(0u), prm(1u), dx, dy), dk, c) & 0xFFFFFFu;
++        } else {
++            c = ((c & 0x1Fu) << 3u) | ((c & 0x3E0u) << 6u) | ((c & 0x7C00u) << 9u);
++        }
+     }
+     scratch[prm(8u) + gid.y * w + gid.x] = c | 0xFF000000u;
+ }
+@@ -630,6 +646,25 @@ fn blend4(c00: u32, c10: u32, c01: u32, c11: u32, fx: f32, fy: f32) -> u32 {
+     return out;
+ }
+ 
++fn hc_index(l: Loc, k: u32) -> u32 {
++    return GS_WORDS * SCALE * SCALE + (l.word * SCALE * SCALE + k) * 2u + (l.shift >> 4u);
++}
++
++// The colour of a 16-bit pixel: the full one kept beside it while it still matches, else the
++// pixel widened the way the GS does. Alpha always comes from the pixel (the GS keeps one bit).
++fn hc_color(l: Loc, k: u32, raw: u32) -> u32 {
++    let r16 = raw & 0xFFFFu;
++    var a = 0u;
++    if ((r16 & 0x8000u) != 0u) {
++        a = 0x80000000u;
++    }
++    let full = atomicLoad(&vram[hc_index(l, k)]);
++    if ((pack16(full) & 0x7FFFu) == (r16 & 0x7FFFu)) {
++        return (full & 0xFFFFFFu) | a;
++    }
++    return ((r16 & 0x1Fu) << 3u) | (((r16 >> 5u) & 0x1Fu) << 11u) | (((r16 >> 10u) & 0x1Fu) << 19u) | a;
++}
++
+ fn read_frame(s: Setup, l: Loc, k: u32) -> u32 {
+     let raw = load_at(l, k);
+     switch s.fpsm {
+@@ -666,6 +701,13 @@ fn write_frame(s: Setup, l: Loc, k: u32, c: u32, mask: u32) {
+                 m16 = m16 | 0x8000u;
+             }
+             store(l, k, (pack16(c) & ~m16) | (old & m16));
++            if (HIGH_COLOR != 0u) {
++                var full = c;
++                if (mask != 0u) {
++                    full = (c & ~mask) | (hc_color(l, k, old) & mask);
++                }
++                atomicStore(&vram[hc_index(l, k)], full);
++            }
+         }
+         case 0x01u {
+             let l32 = Loc(l.word, 0u, 0xFFFFFFFFu);
 diff --git a/runtime/src/gs/gs.cpp b/runtime/src/gs/gs.cpp
 index a9c2be0..228e077 100644
 --- a/runtime/src/gs/gs.cpp
@@ -955,6 +1136,46 @@ index 76e248d..b89b64c 100644
  std::uint64_t primitives_drawn();
  void stats();
  
+diff --git a/runtime/src/gs/queue.cpp b/runtime/src/gs/queue.cpp
+index 66cdf48..7ce00d0 100644
+--- a/runtime/src/gs/queue.cpp
++++ b/runtime/src/gs/queue.cpp
+@@ -121,7 +121,7 @@ void Ring::post(Type type, std::uint32_t arg0, std::uint32_t arg1, const void *d
+     if (bytes) std::memcpy(at + sizeof h, data, bytes);
+     head_.store(head + need, std::memory_order_release);
+     posted_.fetch_add(1);
+-    if (consumer_waiting_.exchange(0)) notify(posted_);
++    signal_consumer();
+ }
+ 
+ bool Ring::peek(Header &header, const std::uint8_t *&payload) {
+@@ -148,6 +148,14 @@ void Ring::pop(const Header &header) {
+ 
+ void Ring::wake() {
+     posted_.fetch_add(1);
++    signal_consumer();
++}
++
++// Wakes a consumer asleep in wait_for_work() the way it sleeps. Outside Linux and the web it waits
++// on a condition variable, which an atomic notify does not reach: posting work used to notify the
++// atomic only, so a waiting consumer slept on until its timeout. The VU thread waits up to 50 ms,
++// and each frame's present went through it, so frames reached the window in uneven bursts.
++void Ring::signal_consumer() {
+ #if !defined(__EMSCRIPTEN__) && !defined(__linux__)
+     if (consumer_waiting_.exchange(0)) {
+         std::lock_guard<std::mutex> lock(wake_mutex_);
+diff --git a/runtime/src/gs/queue.hpp b/runtime/src/gs/queue.hpp
+index bc3cbd3..a5913d8 100644
+--- a/runtime/src/gs/queue.hpp
++++ b/runtime/src/gs/queue.hpp
+@@ -30,6 +30,7 @@ public:
+     void wake();
+ 
+ private:
++    void signal_consumer();
+     std::unique_ptr<std::uint8_t[]> buffer_;
+     std::uint64_t capacity_ = 0;
+     alignas(64) std::atomic<std::uint64_t> head_{0};
 diff --git a/runtime/src/iop/libs.cpp b/runtime/src/iop/libs.cpp
 index 68bc21b..5bae753 100644
 --- a/runtime/src/iop/libs.cpp

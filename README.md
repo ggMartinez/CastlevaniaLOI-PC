@@ -59,7 +59,7 @@ Other keys:
 
 | Key | |
 |---|---|
-| F8 | Shows or hides the on-screen stats: frame rate, CPU and GPU load, how idle each emulation thread is, memory, queued audio |
+| F8 | Shows or hides the on-screen stats: frame rate and the shortest and longest gap between frames (about 16.7 ms both when smooth), CPU and GPU load, how idle each emulation thread is, memory, queued audio |
 | F5 | Quick save: the whole machine state, to `savestates\quick.state` beside the executable |
 | F6 | Quick load of that state |
 
