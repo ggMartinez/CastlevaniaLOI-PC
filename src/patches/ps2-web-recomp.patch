@@ -1332,10 +1332,10 @@ index ac7b52e..8c910f3 100644
          case 0x01u {
              let l32 = Loc(l.word, 0u, 0xFFFFFFFFu);
 diff --git a/runtime/src/gs/gs.cpp b/runtime/src/gs/gs.cpp
-index a9c2be0..66c96ce 100644
+index a9c2be0..f175243 100644
 --- a/runtime/src/gs/gs.cpp
 +++ b/runtime/src/gs/gs.cpp
-@@ -660,15 +660,64 @@ void vblank() {
+@@ -660,15 +660,69 @@ void vblank() {
  
  }
  
@@ -1362,9 +1362,14 @@ index a9c2be0..66c96ce 100644
 +// picture would. One that spans (nearly) the whole width stays as it is when it is a fill (a fade,
 +// a clear) or a copy of something the GS drew (the screen, a shadow pass): those must still cover
 +// the edges. A whole-screen image of the game's own (a logo, a background) is narrowed like the rest.
++// The same microcode also draws effects placed in the 3D world (flames, glows, magic): those were
++// projected with the widened view already, and they are told apart by being fogged like the scene,
++// which the HUD, menus and text never are (depth testing does not tell: the pause menu's icons are
++// depth-tested against Leon's model).
 +const Vertex *narrow_2d(const State &s, int needed, Vertex (&out)[3]) {
 +    const std::uint64_t prim = (s.prmodecont & 1u) ? s.prim : ((s.prim & 7u) | (s.prmode & ~7ull));
 +    const Context &x = s.ctx[(prim >> 9) & 1u];
++    if ((prim >> 5) & 1u) return s.queue;  // FGE: fogged, so a part of the 3D world
 +    const bool textured = (prim >> 4) & 1u;
 +    const auto sx0 = static_cast<std::int32_t>(x.scissor & 0x7FFu), sx1 = static_cast<std::int32_t>((x.scissor >> 16) & 0x7FFu);
 +    const std::int32_t width = (sx1 - sx0 + 1) * 16;
@@ -1402,7 +1407,7 @@ index a9c2be0..66c96ce 100644
  #endif
          capture::prim(s, needed);
          ++g_primitives;
-@@ -1058,6 +1107,14 @@ void resize_window(std::uint32_t width, std::uint32_t height) {
+@@ -1058,6 +1112,14 @@ void resize_window(std::uint32_t width, std::uint32_t height) {
  #endif
  }
  
@@ -1512,7 +1517,7 @@ index 3024df3..0d20ce8 100644
  
  void fire_alarm(int id);
 diff --git a/runtime/src/memory.cpp b/runtime/src/memory.cpp
-index 7a0699c..d8db52c 100644
+index 7a0699c..3b48d93 100644
 --- a/runtime/src/memory.cpp
 +++ b/runtime/src/memory.cpp
 @@ -15,6 +15,7 @@ alignas(64) std::uint8_t g_vu0_code[4096];
@@ -1523,6 +1528,26 @@ index 7a0699c..d8db52c 100644
  
  namespace {
  
+@@ -23,8 +24,8 @@ enum class Region { Ram, Scratchpad, Io, Vu, Rom, None };
+ }
+ 
+ // A watchpoint for porting work: PS2_WATCH=base,len makes every write into
+-// that range of main memory print itself, guest store or bulk copy, with the
+-// cpu state at the time.
++// that range of main memory (or of the scratchpad, at 0x70000000) print itself,
++// guest store or bulk copy, with the cpu state at the time.
+ bool g_watch_on = false;
+ std::uint32_t g_watch_base = 0, g_watch_end = 0;
+ 
+@@ -32,7 +33,7 @@ void init_watch() {
+     if (const char *spec = std::getenv("PS2_WATCH")) {
+         std::uint32_t base = 0, len = 0;
+         if (std::sscanf(spec, "%x,%x", &base, &len) == 2 && len) {
+-            g_watch_base = base & (kRamSize - 1);
++            g_watch_base = (base >> 14) == (kScratchpadBase >> 14) ? base : base & (kRamSize - 1);
+             g_watch_end = g_watch_base + len;
+             g_watch_on = true;
+             std::fprintf(stderr, "[watch] writes to 0x%08X..0x%08X will print\n", g_watch_base, g_watch_end);
 diff --git a/runtime/src/system.cpp b/runtime/src/system.cpp
 index 86f8ca9..d3f3332 100644
 --- a/runtime/src/system.cpp

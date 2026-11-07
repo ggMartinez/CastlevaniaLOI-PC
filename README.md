@@ -40,9 +40,10 @@ The launcher identifies the disc by its boot executable (`SLUS_207.33`, SHA-1
 5. Set **Fullscreen**, **Widescreen** and the internal resolution (1x–3x) if you like, then **Play**.
 
 **Widescreen** is real 16:9: the 3D view gets wider instead of stretched (PCSX2's widescreen
-patch by arapapa, with nemesis2000's fix that keeps movies 4:3). The HUD, menus, text and the
-game's 2D pictures (logos, the title) keep their 4:3 shape, centred; fades and full-screen effects
-still cover the whole picture. Switching it needs no new build.
+patch by arapapa, with nemesis2000's fix that keeps movies 4:3). The menus, text and the game's
+2D pictures (logos, the title) keep their 4:3 shape, centred; the in-game HUD keeps its shape too
+but moves to the top-left corner; fades and full-screen effects still cover the whole picture.
+Switching it needs no new build.
 
 The launcher remembers your disc and goes straight to *Play* after that. After an update of the
 port, it asks you to build the game again: the new version needs a `game.dll` made for it.

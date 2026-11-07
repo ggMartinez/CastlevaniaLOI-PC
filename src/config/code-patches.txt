@@ -11,3 +11,7 @@ widescreen 00712398 3C013B00 3C013AC0   # lui at,0x3AC0: vertical field of view
 # Movie fix by nemesis2000: keeps movies 4:3, pillarboxed, in the 16:9 picture.
 widescreen 004511D0 240574C0 24057300   # addiu a1,zero,0x7300: y position
 widescreen 004511DC 24071400 24071B00   # addiu a3,zero,0x1B00: height
+# HUD (this port): the in-game HUD's anchor, relative to the screen centre, moved left by 85
+# (4:3) pixels, so that once the 2D layer is narrowed to 4:3 it sits in the 16:9 picture's corner.
+widescreen 00433FFC 2404FF08 2404FEB3   # addiu a0,zero,-333 (was -248): HUD x
+widescreen 00434004 2403FF0C 2403FEB7   # addiu v1,zero,-329 (was -244): HUD x, other layout
