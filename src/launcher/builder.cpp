@@ -4,6 +4,7 @@
 #include "builder.hpp"
 
 #include "ps2/disc.hpp"
+#include "ps2/iop_gen.hpp"
 
 #include <windows.h>
 #include <bcrypt.h>
@@ -456,6 +457,39 @@ bool build(const Paths &paths, const GameConfig &config, const std::string &iso,
     if (const std::string e = translate_vu("vu1.txt", kVuImageSize, paths.game / "vu1", false, vu1_images); !e.empty()) return fail(e);
     if (const std::string e = translate_vu("vu0.txt", kVu0ImageSize, paths.game / "vu0", true, vu0_images); !e.empty()) return fail(e);
     progress.line(std::to_string(vu1_images) + " VU1 and " + std::to_string(vu0_images) + " VU0 microcode images");
+
+    // The IOP modules (sound, pads, memory card drivers) listed in iop.txt, each relocated by the
+    // runtime's own loader to the address it always loads at, then translated. ioprecomp runs
+    // even with none: game.dll always registers an IOP table.
+    progress.status("Translating the IOP modules");
+    const fs::path iop_dir = paths.game / "iop";
+    fs::create_directories(iop_dir, ec);
+    std::size_t iop_modules = 0;
+    {
+        std::ifstream list(tools / "config" / "iop.txt");
+        std::string line;
+        while (std::getline(list, line)) {
+            line = trim(line);
+            if (line.empty() || line[0] == '#') continue;
+            std::istringstream words(line);
+            std::string file, base_hex;
+            words >> file >> base_hex;
+            std::vector<std::uint8_t> irx, text;
+            if (!read_file(paths.data / fs::path(file), irx)) return fail("cannot read " + file + " from the game's files");
+            const auto base = static_cast<std::uint32_t>(std::strtoul(base_hex.c_str(), nullptr, 16));
+            if (!ps2::iop::relocated_text(irx, base, text)) return fail(file + " is not an IOP module");
+            const std::string stem = fs::path(file).stem().string();
+            char name[96];
+            std::snprintf(name, sizeof name, "%s_%05X.bin", stem.c_str(), base);
+            write_file(iop_dir / name, text.data(), text.size());
+            ++iop_modules;
+        }
+    }
+    cmd = quote(tools / "ioprecomp.exe") + L" " + quote(iop_dir) + L" " + quote(paths.game / "generated");
+    p = start(cmd, log);
+    if (!p) return fail("cannot start ioprecomp.exe");
+    if (finish(p) != 0) return fail("ioprecomp failed:\n" + tail(log, 15));
+    progress.line(std::to_string(iop_modules) + " IOP modules");
     progress.fraction = 0.22f;
 
     progress.status("Compiling the game code");

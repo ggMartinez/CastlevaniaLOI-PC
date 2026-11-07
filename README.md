@@ -10,6 +10,8 @@ game. The launcher builds the game's code on your PC from your own disc image.
 > **Status: early work in progress.** The game boots, plays its intro and renders on the GPU, but
 > it currently crashes (black screen) when the intro text ends. It is not playable yet.
 
+[ROADMAP.md](ROADMAP.md) tracks, part by part, what of the PS2 already runs natively and what is still emulated.
+
 ## Supported disc
 
 | | |
@@ -103,14 +105,19 @@ of its source is in this repository. Download the port only from this repository
 ```
 your disc ──► launcher ──► eerecomp ──► C++ ──► clang ──► game.dll ──► CastlevaniaLoI.exe runs it
                (checks     (MIPS R5900                                  (PS2 runtime: GS on the GPU,
-                the disc)   to C++)                                      VU1, IPU, SPU2, IOP, pads)
+                the disc)   to C++)                                      IPU, SPU2, IOP, pads)
 ```
 
 - **[ps2-web-recomp](https://github.com/snuri00/ps2-web-recomp)** by snuri00 does the heavy
   lifting. `eerecomp` translates the Emotion Engine's MIPS code to C++, and `vurecomp` does the
-  same for the game's VU1 and VU0 microcode (this port added VU0). Its runtime provides the rest of the PS2: a GS renderer on
-  the GPU (wgpu: Direct3D 12 or Vulkan), VU1, the IPU (video), SPU2 (sound), an IOP interpreter
-  and the memory card. This port adds Windows support on top of it.
+  same for the game's VU1 and VU0 microcode (this port added VU0). Its runtime provides the rest
+  of the PS2: a GS renderer on the GPU (wgpu: Direct3D 12 or Vulkan), the IPU (video), SPU2
+  (sound), the IOP and the memory card. This port adds Windows support on top of it.
+- **The IOP**, the PS2's second processor, runs the game's sound, controller and memory card
+  drivers: modules on the disc (`IOP\*.IRX`). This port adds `ioprecomp`, which translates them to
+  C++ too: the build relocates each module to the address it always loads at (`iop.txt`), and
+  the runtime uses that code when the module loads there unchanged, else its interpreter. The
+  IOP's kernel is the runtime's own native code.
 - **`CastlevaniaLoI.exe`** holds the launcher and the runtime, with no game code inside. It
   exports the runtime for `game.dll` to use.
 - **`game.dll`** holds the translated game code, built on the player's PC by a trimmed
@@ -118,7 +125,8 @@ your disc ──► launcher ──► eerecomp ──► C++ ──► clang �
   `compiler\` folder.
 - **The game's configuration** (`src\config\`) is what this port knows about the disc: its hash,
   the code entry points that static analysis misses, and recipes that rebuild the VU1 and VU0
-  microcode images out of the disc's own executable (`vu1.txt`, `vu0.txt`), so no game bytes are ever stored here. It also lists
+  microcode images out of the disc's own executable (`vu1.txt`, `vu0.txt`), and the IOP modules
+  to translate with their load addresses (`iop.txt`), so no game bytes are ever stored here. It also lists
   code patches (`code-patches.txt`, like PCSX2's `.pnach` ones): a translated game cannot be
   patched by writing its memory, so the translator builds each patched instruction both ways and
   the runtime picks one, here the widescreen patch when Widescreen is on.
@@ -201,6 +209,7 @@ they are the game's.
 ```
 build.bat, clean-build.bat, release.bat
                          the build entry points
+ROADMAP.md               what runs natively and what is still emulated, part by part
 src\launcher\            the launcher and the game builder (launcher.cpp, builder.cpp)
 src\config\              what the port knows about the disc: hash, entry points, VU recipes, code patches
 src\patches\             this port's changes to ps2-web-recomp

@@ -1,0 +1,12 @@
+# IOP modules compiled to native code: their file in the disc's files and the address they always load at
+# (hex). The build relocates each there and translates it (ioprecomp); at run time a module's code is used
+# only if it loads at that address with the same code, else it is interpreted.
+IOP/SIO2MAN.IRX 20000
+IOP/MCMAN.IRX 21000
+IOP/MCSERV.IRX 46700
+IOP/PADMAN.IRX 49F00
+IOP/LIBSD.IRX 53D00
+IOP/SDRDRV.IRX 59700
+IOP/LIBSMF2.IRX 5AA00
+IOP/SDSTR3.IRX 79800
+IOP/SOUND.IRX 82500

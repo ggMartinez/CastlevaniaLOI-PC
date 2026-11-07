@@ -40,6 +40,9 @@ function Translate {
     }
     & "$build\vurecomp.exe" --vu0 "$dev\vu0" $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
     if ($LASTEXITCODE -ne 0) { throw "vurecomp --vu0 failed" }
+    # no IOP modules here (an empty table): exploring runs the IOP interpreted
+    & "$build\ioprecomp.exe" "$dev\iop" $generated 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 1
+    if ($LASTEXITCODE -ne 0) { throw "ioprecomp failed" }
 }
 function Read-Tokens($file) {
     if (-not (Test-Path $file)) { return @() }

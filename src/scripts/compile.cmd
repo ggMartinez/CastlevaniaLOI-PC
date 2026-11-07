@@ -1,5 +1,5 @@
 @echo off
-rem Compiles the translators (eerecomp, vurecomp) and the runner/launcher with the llvm-mingw in tools\.
+rem Compiles the translators (eerecomp, vurecomp, ioprecomp) and the runner/launcher with the llvm-mingw in tools\.
 rem   compile.cmd debug    output\intermediate\debug: optimized, with debug info (a .pdb beside each binary) and a
 rem                        console window for the logs; with output\explore\generated (explore.ps1) it also
 rem                        builds the game's code into game.dll there, for exploring and testing
