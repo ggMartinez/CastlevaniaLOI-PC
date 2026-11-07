@@ -8,4 +8,7 @@
 *.iso
 SLUS_*
 
+# Developer save states and the memory cards that go with them (they hold the game's memory)
+/.savestates/
+
 /.vscode/

@@ -319,7 +319,7 @@ index 984d4d6..2a976a8 100644
  
  void show_speed() {
 diff --git a/recomp/vurecomp.cpp b/recomp/vurecomp.cpp
-index a7e0785..d06e504 100644
+index a7e0785..918cb85 100644
 --- a/recomp/vurecomp.cpp
 +++ b/recomp/vurecomp.cpp
 @@ -657,7 +657,7 @@ int main(int argc, char **argv) {
@@ -331,6 +331,27 @@ index a7e0785..d06e504 100644
              continue;
          }
          if (ps2::vu::branch_in_delay_slot(p.code.data(), kMask, entry)) continue;
+@@ -675,6 +675,20 @@ int main(int argc, char **argv) {
+             if (op == 0x21 || op == 0x25) targets.insert((pc + 16u) & kMask);
+             if (op == 0x08 && ((lo >> 11) & 15u) == 0) targets.insert(((((lo >> 10) & 0x7800u) | (lo & 0x7FFu)) * 8u) & kMask);
+         }
++        // Every other place a program can start in this image, recorded or not: microcode packs
++        // several programs and jump tables (a branch every 16 or 32 bytes, one per entry the CPU
++        // starts with MSCAL), and a recording only finds those a run happened to use; the rest
++        // fall to the interpreter. A start is an instruction no other one falls through to: the
++        // first, and the one after an unconditional branch, a jump or an end (E bit) and its delay
++        // slot.
++        std::uint32_t end = kMask + 1u;
++        while (end >= 8u && word(programs[i].code, end - 8u) == 0u && word(programs[i].code, end - 4u) == 0u) end -= 8u;
++        targets.insert(0u);
++        for (std::uint32_t pc = 0; pc + 16u < end; pc += 8u) {
++            const std::uint32_t lo = word(programs[i].code, pc), hi = word(programs[i].code, pc + 4);
++            const std::uint32_t op = lo >> 25;
++            if ((hi & 0x40000000u) || (!(hi & 0x80000000u) && (op == 0x20 || op == 0x21 || op == 0x24 || op == 0x25))) targets.insert(pc + 16u);
++        }
+         for (std::uint32_t target : targets) {
+             const std::uint64_t key = ps2::vu::program_key(programs[i].code.data(), ps2::vu::reachable(programs[i].code.data(), kMask, target), target);
+             if (ps2::vu::branch_in_delay_slot(programs[i].code.data(), kMask, target)) continue;
 diff --git a/runtime/include/ps2/memory.hpp b/runtime/include/ps2/memory.hpp
 index 6a919d2..efd4b09 100644
 --- a/runtime/include/ps2/memory.hpp
