@@ -55,6 +55,19 @@ Keyboard:
 | Square | A | | Select | Backspace |
 | Triangle | S | | Fullscreen on/off | F11 |
 
+Other keys:
+
+| Key | |
+|---|---|
+| F8 | Shows or hides the on-screen stats: frame rate, CPU and GPU load, how idle each emulation thread is, memory, queued audio |
+| F5 | Quick save: the whole machine state, to `savestates\quick.state` beside the executable |
+| F6 | Quick load of that state |
+
+Quick saves are separate from the game's own memory card saves and are overwritten by every F5.
+They are tied to this build: a state from an older version may not load. A developer build run
+from inside the repository keeps them in the repository's `.savestates\` folder instead, which
+git ignores and clean builds leave alone.
+
 ### Files
 
 Everything stays in the extracted folder:
@@ -62,6 +75,7 @@ Everything stays in the extracted folder:
 | | |
 |---|---|
 | `saves\memcard1.ps2` | The memory card |
+| `savestates\quick.state` | The F5 quick save |
 | `logs\build.log`, `logs\game.log` | The game build's log and the game's own log |
 | `settings.ini` | The launcher's settings |
 | `game\`, `game.dll` | What the launcher built from your disc. Delete them to build again |

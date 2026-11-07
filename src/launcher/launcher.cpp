@@ -52,6 +52,15 @@ bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
                        L" --window";
     if (s.fullscreen) cmd += L" --fullscreen";
     if (s.widescreen) cmd += L" --widescreen";
+    // Quick save / load (F5 / F6): a developer build inside the repository uses its .savestates
+    // folder, so states outlive clean builds; any other copy keeps them beside the executable.
+    fs::path states = paths.root / "savestates";
+    for (fs::path dir = paths.root; dir.has_parent_path() && dir != dir.parent_path(); dir = dir.parent_path())
+        if (fs::is_directory(dir / ".savestates", ec)) {
+            states = dir / ".savestates";
+            break;
+        }
+    cmd += L" --states " + q(states);
     SetEnvironmentVariableW(L"PS2_SCALE", std::to_wstring(s.scale).c_str());
     // The game writes its log beside the others; a launched game has no console.
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
