@@ -629,15 +629,14 @@ Settings Settings::load(const Paths &paths) {
         return it == keys.end() ? d : it->second;
     };
     s.iso = get("iso", "");
-    s.fullscreen = get("fullscreen", "0") == "1";
-    s.widescreen = get("widescreen", "0") == "1";
-    s.scale = std::clamp(std::atoi(get("scale", "1").c_str()), 1, 3);
+    s.graphics = ps2::load_graphics((paths.root / "settings.ini").string());
     return s;
 }
 
 void Settings::save(const Paths &paths) const {
-    std::ofstream out(paths.root / "settings.ini");
-    out << "iso=" << iso << "\nfullscreen=" << (fullscreen ? 1 : 0) << "\nwidescreen=" << (widescreen ? 1 : 0) << "\nscale=" << scale << "\n";
+    const std::string path = (paths.root / "settings.ini").string();
+    std::ofstream(path, std::ios::binary) << "iso=" << iso << "\n";
+    ps2::save_graphics(path, graphics);
 }
 
 }

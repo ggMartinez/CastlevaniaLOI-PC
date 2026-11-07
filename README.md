@@ -28,7 +28,7 @@ The launcher identifies the disc by its boot executable (`SLUS_207.33`, SHA-1
 ### Requirements
 
 - Windows 10 or 11, 64-bit
-- A graphics card with Direct3D 12 support
+- A graphics card with Direct3D 12 or Vulkan support and at least 6 GB of video memory
 - About 3.5 GB of disk space: the build copies the game's files off the disc image, which you can
   delete afterwards
 - Nothing else to install: the compiler the launcher uses is in the download
@@ -41,13 +41,27 @@ The launcher identifies the disc by its boot executable (`SLUS_207.33`, SHA-1
 4. **Build the game.** This happens once and takes about a minute: the launcher copies the game's
    files off the disc image, translates the game's code to C++ and compiles it into `game.dll`, with
    progress and a log.
-5. Set **Fullscreen**, **Widescreen** and the internal resolution (1x–3x) if you like, then **Play**.
+5. Set the graphics options if you like, then **Play**. The same options can be changed while playing
+   with **F10**:
+   - graphics API: Vulkan (the default) or Direct3D 12, applied after a restart;
+   - internal resolution: 1x to 6x, labelled with the resolution each gives, from about 480p to about
+     2880p (5K). 5x is the first to reach 4K;
+   - vsync;
+   - aspect ratio: 4:3 or 16:9;
+   - fullscreen;
+   - anti-aliasing: FXAA;
+   - upscaling filter: the default one, or an FSR-style edge-adaptive one for when the window is larger
+     than the internal resolution;
+   - sharpening, bloom, colour (brightness, contrast, saturation, gamma), debanding, CRT (scanlines,
+     optional curvature), vignette and film grain.
+
+   With every effect off, the picture is exactly what it was without them.
 
 **Widescreen** is real 16:9: the 3D view gets wider instead of stretched (PCSX2's widescreen
 patch by arapapa, with nemesis2000's fix that keeps movies 4:3). The menus, text and the game's
 2D pictures (logos, the title) keep their 4:3 shape, centred; the in-game HUD keeps its shape too
 but moves to the top-left corner; fades and full-screen effects still cover the whole picture.
-Switching it needs no new build.
+Switching it needs no new build, and works while playing (F10).
 
 After the build the game plays from those copied files: the disc image is no longer needed, to play
 or to build again, and you can move or delete it. After an update of the port, the launcher asks you
@@ -74,6 +88,7 @@ Other keys:
 | F8 | Shows or hides the on-screen stats: frame rate and the shortest and longest gap between frames (about 16.7 ms both when smooth), CPU and GPU load, how idle each emulation thread is, memory, queued audio |
 | F5 | Quick save: the whole machine state, to `savestates\quick.state` beside the executable |
 | F6 | Quick load of that state |
+| F10 | Opens or closes the graphics options; the game pauses while they're open |
 
 Quick saves are separate from the game's own memory card saves and are overwritten by every F5.
 They are tied to this build: a state from an older version may not load. A developer build run
@@ -168,7 +183,8 @@ versions, checking each download against its SHA-256:
 | `tools\cmake`, `tools\ninja` | CMake 4.4.5 and Ninja 1.13.2 |
 | `tools\wgpu-native` | wgpu-native v29.0.1.1, the renderer's graphics library |
 | `tools\SDL2` | SDL 2.32.10: window, input, sound |
-| `tools\imgui` | Dear ImGui v1.93.0: the launcher's interface |
+| `tools\imgui` | Dear ImGui v1.93.0: the launcher's interface and the in-game F10 menu |
+| `tools\dxc` | DirectX Shader Compiler v1.9.2609: compiles the renderer's shaders on Direct3D 12 (`dxcompiler.dll` ships beside the executable) |
 | `tools\ps2-web-recomp` | ps2-web-recomp, cloned at commit `e026b97`, with `src\patches\ps2-web-recomp.patch` applied |
 
 A folder already there is left alone; delete it to fetch it again.
@@ -228,6 +244,8 @@ output\                  everything the scripts build (not in git)
 - [wgpu-native](https://github.com/gfx-rs/wgpu-native) (MIT / Apache 2.0)
 - [SDL](https://github.com/libsdl-org/SDL) (zlib)
 - [Dear ImGui](https://github.com/ocornut/imgui) by Omar Cornut (MIT)
+- [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler) by Microsoft (LLVM Release License and MIT; only `dxcompiler.dll` ships):
+  compiles the renderer's shaders on Direct3D 12
 - [jmafort/CastlevaniaCOD-PC](https://github.com/jmafort/CastlevaniaCOD-PC), the native port of
   *Curse of Darkness*: the model for how this port is distributed, with a launcher that builds the
   game from the player's own copy

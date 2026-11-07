@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "ps2/graphics.hpp"
+
 namespace launcher {
 
 namespace fs = std::filesystem;
@@ -73,9 +75,7 @@ int extract_boot(const fs::path &config_file, const std::string &iso, const fs::
 // Settings the launcher keeps in settings.ini beside the executable.
 struct Settings {
     std::string iso;
-    bool fullscreen = false;
-    bool widescreen = false;
-    int scale = 1;
+    ps2::Graphics graphics;  // the graphics keys, shared with the game (ps2/graphics.hpp)
     static Settings load(const Paths &paths);
     void save(const Paths &paths) const;
 };

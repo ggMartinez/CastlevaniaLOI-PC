@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 6765f07..cc8c713 100644
+index 6765f07..d268bec 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,9 +14,13 @@ index 6765f07..cc8c713 100644
  if(EMSCRIPTEN)
      add_compile_options(-msimd128 -mtail-call -fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=0 -pthread)
      add_link_options(-msimd128 -mtail-call -fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=0 -pthread)
-@@ -24,6 +29,9 @@ if(NOT EMSCRIPTEN)
+@@ -23,12 +28,19 @@ if(NOT EMSCRIPTEN)
+ 
      add_executable(vujit_dump recomp/vujit_dump.cpp runtime/src/vu_jit.cpp)
      target_include_directories(vujit_dump PRIVATE runtime/include runtime/src)
++    add_executable(graphics_settings_test tests/graphics_settings_test.cpp runtime/src/graphics.cpp)
++    target_include_directories(graphics_settings_test PRIVATE runtime/include)
++    target_compile_options(graphics_settings_test PRIVATE -Wall -Wextra)
      add_executable(vurecomp recomp/vurecomp.cpp)
 +    add_executable(ioprecomp recomp/ioprecomp.cpp)
 +    target_include_directories(ioprecomp PRIVATE runtime/include)
@@ -24,7 +28,13 @@ index 6765f07..cc8c713 100644
      target_include_directories(vurecomp PRIVATE runtime/include)
      target_compile_options(vurecomp PRIVATE -Wall -Wextra)
  endif()
-@@ -47,6 +55,7 @@ add_library(ps2runtime STATIC
+ 
+ add_library(ps2runtime STATIC
++    runtime/src/graphics.cpp
+     runtime/src/memory.cpp
+     runtime/src/dispatch.cpp
+     runtime/src/system.cpp
+@@ -47,6 +59,7 @@ add_library(ps2runtime STATIC
      runtime/src/gs/queue.cpp
      runtime/src/gs/raster.cpp
      runtime/src/iop/cpu.cpp
@@ -32,7 +42,7 @@ index 6765f07..cc8c713 100644
      runtime/src/iop/kernel.cpp
      runtime/src/iop/libs.cpp
      runtime/src/iop/hw.cpp
-@@ -60,7 +69,18 @@ target_include_directories(ps2runtime PUBLIC runtime/include)
+@@ -60,7 +73,18 @@ target_include_directories(ps2runtime PUBLIC runtime/include)
  target_compile_options(ps2runtime PRIVATE -Wall -Wextra)
  
  set(PS2_WGPU_DIR "${CMAKE_SOURCE_DIR}/third_party/wgpu-native" CACHE PATH "wgpu-native release folder")
@@ -52,7 +62,19 @@ index 6765f07..cc8c713 100644
      set(PS2_GS_WGSL "${CMAKE_BINARY_DIR}/gs_wgsl.cpp")
      add_custom_command(OUTPUT "${PS2_GS_WGSL}"
          COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/runtime/src/gs/gpu/gs.wgsl -DOUT=${PS2_GS_WGSL} -DNAME=kGsShader -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
-@@ -76,15 +96,33 @@ if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
+@@ -69,22 +93,44 @@ if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
+     add_custom_command(OUTPUT "${PS2_BLIT_WGSL}"
+         COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/runtime/src/gs/gpu/blit.wgsl -DOUT=${PS2_BLIT_WGSL} -DNAME=kBlitShader -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+         DEPENDS runtime/src/gs/gpu/blit.wgsl cmake/embed.cmake)
+-    target_sources(ps2runtime PRIVATE runtime/src/gs/gpu/gpu.cpp "${PS2_GS_WGSL}" "${PS2_BLIT_WGSL}")
++    set(PS2_EFFECTS_WGSL "${CMAKE_BINARY_DIR}/effects_wgsl.cpp")
++    add_custom_command(OUTPUT "${PS2_EFFECTS_WGSL}"
++        COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/runtime/src/gs/gpu/effects.wgsl -DOUT=${PS2_EFFECTS_WGSL} -DNAME=kEffectsShader -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
++        DEPENDS runtime/src/gs/gpu/effects.wgsl cmake/embed.cmake)
++    target_sources(ps2runtime PRIVATE runtime/src/gs/gpu/gpu.cpp "${PS2_GS_WGSL}" "${PS2_BLIT_WGSL}" "${PS2_EFFECTS_WGSL}")
+     target_compile_definitions(ps2runtime PUBLIC PS2_GPU)
+     if(EMSCRIPTEN)
+         target_compile_options(ps2runtime PUBLIC --use-port=emdawnwebgpu)
          target_link_options(ps2runtime PUBLIC --use-port=emdawnwebgpu)
      else()
          target_include_directories(ps2runtime PRIVATE "${PS2_WGPU_DIR}/include")
@@ -87,7 +109,7 @@ index 6765f07..cc8c713 100644
      add_library(ps2game STATIC ${PS2_UNITS})
      target_include_directories(ps2game PRIVATE "${PS2_GENERATED}")
      target_link_libraries(ps2game PUBLIC ps2runtime)
-@@ -109,9 +147,25 @@ if(PS2_GENERATED)
+@@ -109,9 +155,25 @@ if(PS2_GENERATED)
          set_target_properties(ps2web PROPERTIES SUFFIX ".html" LINK_DEPENDS ${CMAKE_SOURCE_DIR}/web/shell.html)
          return()
      endif()
@@ -114,7 +136,7 @@ index 6765f07..cc8c713 100644
      if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
          target_sources(ps2run PRIVATE host/profile.cpp)
          target_compile_definitions(ps2run PRIVATE PS2_PROFILE)
-@@ -121,5 +175,41 @@ if(PS2_GENERATED)
+@@ -121,5 +183,43 @@ if(PS2_GENERATED)
          target_sources(ps2run PRIVATE host/window.cpp)
          target_compile_definitions(ps2run PRIVATE PS2_WINDOW)
          target_link_libraries(ps2run PRIVATE SDL2::SDL2)
@@ -127,9 +149,11 @@ index 6765f07..cc8c713 100644
 +            target_sources(ps2run PRIVATE "${PS2_LAUNCHER_DIR}/launcher.cpp" "${PS2_LAUNCHER_DIR}/builder.cpp" "${PS2_LAUNCHER_DIR}/windows.rc"
 +                "${PS2_IMGUI_DIR}/imgui.cpp" "${PS2_IMGUI_DIR}/imgui_draw.cpp" "${PS2_IMGUI_DIR}/imgui_tables.cpp"
 +                "${PS2_IMGUI_DIR}/imgui_widgets.cpp" "${PS2_IMGUI_DIR}/backends/imgui_impl_sdl2.cpp"
-+                "${PS2_IMGUI_DIR}/backends/imgui_impl_sdlrenderer2.cpp")
-+            target_include_directories(ps2run PRIVATE "${PS2_LAUNCHER_DIR}" "${PS2_IMGUI_DIR}" "${PS2_IMGUI_DIR}/backends")
-+            target_compile_definitions(ps2run PRIVATE PS2_LAUNCHER)
++                "${PS2_IMGUI_DIR}/backends/imgui_impl_sdlrenderer2.cpp"
++                # the in-game F10 menu: the same options, drawn into the presentation pass
++                host/menu.cpp host/graphics_ui.cpp "${PS2_IMGUI_DIR}/backends/imgui_impl_wgpu.cpp")
++            target_include_directories(ps2run PRIVATE "${PS2_LAUNCHER_DIR}" "${PS2_IMGUI_DIR}" "${PS2_IMGUI_DIR}/backends" host "${PS2_WGPU_DIR}/include")
++            target_compile_definitions(ps2run PRIVATE PS2_LAUNCHER PS2_MENU IMGUI_IMPL_WEBGPU_BACKEND_WGPU)
 +            target_link_libraries(ps2run PRIVATE bcrypt comdlg32)
 +            if(NOT PS2_LAUNCHER_CONSOLE)
 +                # A windowed program: no console opens when a player starts it.
@@ -175,11 +199,131 @@ index 0000000..6b586b7
 +    register_generated_vu0();
 +    register_generated_iop();
 +}
+diff --git a/host/graphics_ui.cpp b/host/graphics_ui.cpp
+new file mode 100644
+index 0000000..2d4285d
+--- /dev/null
++++ b/host/graphics_ui.cpp
+@@ -0,0 +1,91 @@
++#include "graphics_ui.hpp"
++
++#include "ps2/system.hpp"
++
++#include <imgui.h>
++
++namespace ps2ui {
++
++namespace {
++
++// A switch with an optional strength slider under it while it's on.
++bool with_strength(const char *label, bool &on, float *strength, const char *id) {
++    bool changed = ImGui::Checkbox(label, &on);
++    if (on && strength) {
++        ImGui::Indent();
++        ImGui::PushID(id);
++        changed |= ImGui::SliderFloat("Strength", strength, 0.0f, 1.0f, "%.2f");
++        ImGui::PopID();
++        ImGui::Unindent();
++    }
++    return changed;
++}
++
++}
++
++bool graphics_options(ps2::Graphics &g, bool in_game) {
++    bool changed = false;
++    const char *const apis[] = {"Direct3D 12", "Vulkan"};
++    int api = g.api == ps2::Api::vulkan ? 1 : 0;
++    if (ImGui::Combo(in_game ? "Graphics API (after restart)" : "Graphics API", &api, apis, 2)) {
++        g.api = api ? ps2::Api::vulkan : ps2::Api::d3d12;
++        changed = true;
++    }
++    const char *labels[6];
++    for (int i = 0; i < 6; ++i) labels[i] = ps2::scale_label(i + 1);
++    int scale = g.scale - 1;
++    if (ImGui::Combo("Internal resolution", &scale, labels, 6)) {
++        g.scale = scale + 1;
++        changed = true;
++    }
++    changed |= ImGui::Checkbox("Vsync", &g.vsync);
++    int aspect = g.widescreen ? 1 : 0;
++    ImGui::TextUnformatted(in_game && !ps2::widescreen_live() ? "Aspect ratio (after restart)" : "Aspect ratio");
++    ImGui::SameLine();
++    changed |= ImGui::RadioButton("4:3", &aspect, 0);
++    ImGui::SameLine();
++    changed |= ImGui::RadioButton("16:9", &aspect, 1);
++    g.widescreen = aspect == 1;
++    changed |= ImGui::Checkbox("Fullscreen", &g.fullscreen);
++
++    ImGui::SeparatorText("Picture");
++    const char *const aa[] = {"Off", "FXAA"};
++    int fxaa = g.fxaa ? 1 : 0;
++    if (ImGui::Combo("Anti-aliasing", &fxaa, aa, 2)) {
++        g.fxaa = fxaa == 1;
++        changed = true;
++    }
++    const char *const upscale[] = {"Default", "FSR-style"};
++    int fsr = g.fsr ? 1 : 0;
++    if (ImGui::Combo("Upscaling filter", &fsr, upscale, 2)) {
++        g.fsr = fsr == 1;
++        changed = true;
++    }
++    changed |= with_strength("Sharpening", g.sharpen, &g.sharpen_strength, "sharpen");
++    changed |= with_strength("Bloom", g.bloom, &g.bloom_strength, "bloom");
++    if (ImGui::TreeNode("Colour")) {
++        changed |= ImGui::SliderFloat("Brightness", &g.brightness, -0.5f, 0.5f, "%.2f");
++        changed |= ImGui::SliderFloat("Contrast", &g.contrast, 0.5f, 1.5f, "%.2f");
++        changed |= ImGui::SliderFloat("Saturation", &g.saturation, 0.0f, 2.0f, "%.2f");
++        changed |= ImGui::SliderFloat("Gamma", &g.gamma, 0.5f, 2.0f, "%.2f");
++        if (ImGui::Button("Reset colour")) {
++            g.brightness = 0.0f;
++            g.contrast = g.saturation = g.gamma = 1.0f;
++            changed = true;
++        }
++        ImGui::TreePop();
++    }
++    changed |= ImGui::Checkbox("Debanding", &g.deband);
++    changed |= ImGui::Checkbox("CRT", &g.crt);
++    if (g.crt) {
++        ImGui::Indent();
++        changed |= ImGui::SliderFloat("Scanlines", &g.crt_scanlines, 0.0f, 1.0f, "%.2f");
++        changed |= ImGui::Checkbox("Curvature", &g.crt_curvature);
++        ImGui::Unindent();
++    }
++    changed |= with_strength("Vignette", g.vignette, &g.vignette_strength, "vignette");
++    changed |= with_strength("Film grain", g.grain, &g.grain_strength, "grain");
++    return changed;
++}
++
++}
+diff --git a/host/graphics_ui.hpp b/host/graphics_ui.hpp
+new file mode 100644
+index 0000000..b5dc0f7
+--- /dev/null
++++ b/host/graphics_ui.hpp
+@@ -0,0 +1,12 @@
++#pragma once
++
++#include "ps2/graphics.hpp"
++
++namespace ps2ui {
++
++// The graphics options as Dear ImGui widgets, shared by the launcher and the in-game F10 menu so both
++// show the same choices with the same labels. in_game marks the options that apply only after a
++// restart there. Returns true when the player changed something.
++bool graphics_options(ps2::Graphics &g, bool in_game);
++
++}
 diff --git a/host/main.cpp b/host/main.cpp
-index 2fdf426..a5f0070 100644
+index 2fdf426..31f7bce 100644
 --- a/host/main.cpp
 +++ b/host/main.cpp
-@@ -13,11 +13,45 @@
+@@ -1,3 +1,4 @@
++#include "ps2/graphics.hpp"
+ #include "ps2/system.hpp"
+ 
+ #ifdef PS2_WINDOW
+@@ -13,11 +14,45 @@
  #include <string>
  #include <vector>
  
@@ -225,7 +369,7 @@ index 2fdf426..a5f0070 100644
  int usage() {
      std::fprintf(stderr,
                   "usage: ps2run <elf> [--arg text]... [--frames n] [--run n] [--ntsc] [--misses file]\n"
-@@ -31,10 +65,23 @@ int usage() {
+@@ -31,10 +66,23 @@ int usage() {
  }
  
  int main(int argc, char **argv) {
@@ -249,7 +393,24 @@ index 2fdf426..a5f0070 100644
      std::uint64_t run_frames = 0;
      for (int i = 2; i < argc; ++i) {
          const std::string a = argv[i];
-@@ -81,14 +128,39 @@ int main(int argc, char **argv) {
+@@ -48,6 +96,16 @@ int main(int argc, char **argv) {
+         else if (a == "--misses" && i + 1 < argc) ps2::g_options.misses_path = argv[++i];
+         else if (a == "--trace-syscalls") ps2::g_options.trace_syscalls = true;
+         else if (a == "--widescreen") ps2::g_options.widescreen = true;
++        else if (a == "--settings" && i + 1 < argc) {
++            // The player's graphics settings (settings.ini); flags given on the command line win.
++            ps2::graphics_file() = argv[++i];
++            const ps2::Graphics g = ps2::load_graphics(ps2::graphics_file());
++            ps2::set_graphics(g);
++            ps2::g_options.widescreen = ps2::g_options.widescreen || g.widescreen;
++#ifdef PS2_WINDOW
++            if (g.fullscreen) window = fullscreen = true;
++#endif
++        }
+         else if (a == "--patches" && i + 1 < argc) {
+             if (!ps2::load_patches(argv[++i])) return usage();
+         }
+@@ -81,14 +139,48 @@ int main(int argc, char **argv) {
              ps2::g_options.save_state_path = spec.substr(colon + 1);
          }
          else if (a == "--load-state" && i + 1 < argc) load_path = argv[++i];
@@ -268,6 +429,15 @@ index 2fdf426..a5f0070 100644
 +#endif
          else return usage();
      }
++    {
++        // What the flags decided is what the settings say from here on.
++        ps2::Graphics g = ps2::graphics();
++        g.widescreen = ps2::g_options.widescreen;
++#ifdef PS2_WINDOW
++        g.fullscreen = fullscreen;
++#endif
++        ps2::set_graphics(g);
++    }
  
  #ifdef PS2_WINDOW
      if (window && !open_window(fullscreen)) return 1;
@@ -289,13 +459,153 @@ index 2fdf426..a5f0070 100644
      const auto emulate = [&]() -> int {
          std::uint32_t entry = 0;
          if (!ps2::load_elf(argv[1], entry)) {
+diff --git a/host/menu.cpp b/host/menu.cpp
+new file mode 100644
+index 0000000..453bb7c
+--- /dev/null
++++ b/host/menu.cpp
+@@ -0,0 +1,106 @@
++#include "menu.hpp"
++
++#include "graphics_ui.hpp"
++#include "ps2/graphics.hpp"
++#include "ps2/system.hpp"
++
++#include <SDL.h>
++#include <imgui.h>
++#include <imgui_impl_sdl2.h>
++#include <imgui_impl_wgpu.h>
++#include <webgpu/webgpu.h>
++
++#include <cstdio>
++
++namespace menu {
++
++namespace {
++
++SDL_Window *g_window = nullptr;
++bool g_can_pause = false, g_ready = false, g_open = false, g_drawn = false;
++
++void draw(void *render_pass) {
++    if (g_open && g_drawn) ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), static_cast<WGPURenderPassEncoder>(render_pass));
++}
++
++// ImGui starts the first time the menu opens: the GPU device exists by then.
++bool ensure() {
++    if (g_ready) return true;
++    if (!ps2::gpu_device()) return false;
++    IMGUI_CHECKVERSION();
++    ImGui::CreateContext();
++    ImGuiIO &io = ImGui::GetIO();
++    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
++    io.IniFilename = nullptr;
++    ImGui::StyleColorsDark();
++    ImGui_ImplSDL2_InitForOther(g_window);
++    ImGui_ImplWGPU_InitInfo info;
++    info.Device = static_cast<WGPUDevice>(ps2::gpu_device());
++    info.NumFramesInFlight = 3;
++    info.RenderTargetFormat = static_cast<WGPUTextureFormat>(ps2::gpu_surface_format());
++    info.DepthStencilFormat = WGPUTextureFormat_Undefined;
++    if (!ImGui_ImplWGPU_Init(&info)) return false;
++    ps2::set_menu_draw(draw);
++    g_ready = true;
++    return true;
++}
++
++void set_open(bool open) {
++    if (open == g_open) return;
++    g_open = open;
++    g_drawn = false;
++    if (g_can_pause) ps2::request_pause(open);
++    std::fprintf(stderr, "[menu] %s at frame %llu\n", open ? "opened" : "closed", static_cast<unsigned long long>(ps2::frame_count()));
++}
++
++}
++
++void init(SDL_Window *window, bool can_pause) {
++    g_window = window;
++    g_can_pause = can_pause;
++}
++
++bool open() { return g_open; }
++
++void toggle() {
++    if (!g_open && !ensure()) return;
++    set_open(!g_open);
++}
++
++bool handle_event(const SDL_Event &e) {
++    if (!g_open) return false;
++    if (e.type == SDL_KEYDOWN && !e.key.repeat && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
++        set_open(false);
++        return true;
++    }
++    ImGui_ImplSDL2_ProcessEvent(&e);
++    return true;
++}
++
++void frame() {
++    if (!g_open || !g_ready) return;
++    ImGui_ImplWGPU_NewFrame();
++    ImGui_ImplSDL2_NewFrame();
++    ImGui::NewFrame();
++    const ImGuiViewport *vp = ImGui::GetMainViewport();
++    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
++    ImGui::Begin("Graphics", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
++    ps2::Graphics g = ps2::graphics();
++    const bool fullscreen = g.fullscreen;
++    if (ps2ui::graphics_options(g, true)) {
++        ps2::set_graphics(g);
++        if (!ps2::graphics_file().empty()) ps2::save_graphics(ps2::graphics_file(), g);
++        if (g.fullscreen != fullscreen) {
++            SDL_SetWindowFullscreen(g_window, g.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
++            SDL_ShowCursor(g.fullscreen ? SDL_DISABLE : SDL_ENABLE);
++        }
++    }
++    ImGui::Separator();
++    const bool close = ImGui::Button("Close (F10)");
++    ImGui::End();
++    ImGui::Render();
++    g_drawn = true;
++    if (close) set_open(false);
++}
++
++}
+diff --git a/host/menu.hpp b/host/menu.hpp
+new file mode 100644
+index 0000000..73d1c78
+--- /dev/null
++++ b/host/menu.hpp
+@@ -0,0 +1,18 @@
++#pragma once
++
++union SDL_Event;
++struct SDL_Window;
++
++// The in-game F10 menu: the graphics options over the game picture, drawn with Dear ImGui into the
++// presentation pass. While it's open the game is paused (threaded runs) and gets no input.
++namespace menu {
++
++void init(SDL_Window *window, bool can_pause);
++bool open();
++void toggle();
++// Called for every SDL event; true when the menu used it (it's open), so the game doesn't see it.
++bool handle_event(const SDL_Event &e);
++// Builds the menu's frame; called on the presenting thread right before each presentation.
++void frame();
++
++}
 diff --git a/host/window.cpp b/host/window.cpp
-index 984d4d6..3ba4287 100644
+index 984d4d6..44b46a0 100644
 --- a/host/window.cpp
 +++ b/host/window.cpp
-@@ -1,11 +1,18 @@
+@@ -1,11 +1,22 @@
  #include "window.hpp"
  
++#ifdef PS2_MENU
++#include "menu.hpp"
++#endif
++
 +#include "ps2/state_request.hpp"
  #include "ps2/system.hpp"
  
@@ -312,7 +622,7 @@ index 984d4d6..3ba4287 100644
  #ifdef __APPLE__
  #include <SDL_metal.h>
  #include <mach/mach.h>
-@@ -17,6 +24,8 @@
+@@ -17,6 +28,8 @@
  #include <cstdio>
  #include <cstdlib>
  #include <cstring>
@@ -321,7 +631,7 @@ index 984d4d6..3ba4287 100644
  #include <thread>
  #include <vector>
  
-@@ -68,6 +77,135 @@ std::uint64_t g_last = 0;
+@@ -68,6 +81,136 @@ std::uint64_t g_last = 0;
  std::vector<std::uint32_t> g_pixels;
  bool g_gpu_present = false;
  
@@ -409,6 +719,7 @@ index 984d4d6..3ba4287 100644
 +// Called every frame on the presenting thread: picks up finished quick saves and loads, lets the
 +// message expire and draws the display again when something on it changed.
 +void refresh_osd() {
++    if (const std::string notice = ps2::take_display_notice(); !notice.empty()) osd_message(notice, 0xFF8080);
 +    switch (g_state_done.exchange(0)) {
 +    case 1: osd_message("State saved", 0x80FF80); break;
 +    case 2: osd_message("State loaded", 0x80FF80); break;
@@ -457,7 +768,7 @@ index 984d4d6..3ba4287 100644
  bool create_renderer() {
      g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
      if (!g_renderer) g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_SOFTWARE);
-@@ -101,6 +239,13 @@ bool attach_gpu() {
+@@ -101,6 +244,13 @@ bool attach_gpu() {
      }
  #endif
      switch (info.subsystem) {
@@ -471,10 +782,64 @@ index 984d4d6..3ba4287 100644
  #if defined(SDL_VIDEO_DRIVER_X11)
      case SDL_SYSWM_X11:
          target.kind = ps2::WindowTarget::X11;
-@@ -208,6 +353,13 @@ void poll() {
+@@ -164,7 +314,14 @@ void poll_port(int port) {
+     std::uint16_t pressed = 0;
+     std::uint8_t l2 = 0xFF, r2 = 0xFF;
+     std::uint8_t lx = 0x80, ly = 0x80, rx = 0x80, ry = 0x80;
+-    if (port == 0) {
++#ifdef PS2_MENU
++    // While the F10 menu is open the game sees a controller with nothing pressed.
++    const bool menu_open = menu::open();
++#else
++    const bool menu_open = false;
++#endif
++    if (menu_open) pad = nullptr;
++    if (port == 0 && !menu_open) {
+         const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+         for (const KeyBinding &b : kKeys)
+             if (keys[b.key]) pressed |= b.button;
+@@ -205,9 +362,51 @@ void poll_port(int port) {
+ }
+ 
+ void poll() {
++    // Development trigger (PS2_RESIZE_AT=<frame>:<w>x<h>): resizes the window once that frame is reached.
++    static const char *const resize_at = std::getenv("PS2_RESIZE_AT");
++    static bool resized = false;
++    if (resize_at && !resized && std::strchr(resize_at, ':') && ps2::frame_count() >= std::strtoull(resize_at, nullptr, 10)) {
++        resized = true;
++        int w = 0, h = 0;
++        if (std::sscanf(std::strchr(resize_at, ':') + 1, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) SDL_SetWindowSize(g_window, w, h);
++    }
++#ifdef PS2_MENU
++    // Development triggers: PS2_MENU_AT=<frame> opens the F10 menu at that frame, and
++    // PS2_MENU_CLOSE_AFTER_MS=<ms> closes it that long after it opened.
++    static const char *const menu_at = std::getenv("PS2_MENU_AT");
++    static const char *const menu_close = std::getenv("PS2_MENU_CLOSE_AFTER_MS");
++    static bool menu_triggered = false;
++    static std::uint64_t menu_opened = 0;
++    if (menu_at && !menu_triggered && ps2::frame_count() >= std::strtoull(menu_at, nullptr, 10)) {
++        menu_triggered = true;
++        menu::toggle();
++        menu_opened = SDL_GetTicks64();
++    }
++    if (menu_close && menu_opened && menu::open() && SDL_GetTicks64() - menu_opened >= std::strtoull(menu_close, nullptr, 10)) {
++        menu::toggle();
++        menu_opened = 0;
++    }
++#endif
      SDL_Event e;
      while (SDL_PollEvent(&e)) {
          if (e.type == SDL_QUIT) ps2::halt("window closed");
++#ifdef PS2_MENU
++        if (e.type == SDL_KEYDOWN && !e.key.repeat && e.key.keysym.scancode == SDL_SCANCODE_F10) {
++            menu::toggle();
++            continue;
++        }
++        // While the menu is open, keyboard, mouse and controller input go to it alone.
++        const bool input = e.type == SDL_KEYDOWN || e.type == SDL_KEYUP || e.type == SDL_TEXTINPUT || (e.type >= SDL_MOUSEMOTION && e.type <= SDL_MOUSEWHEEL) ||
++                           (e.type >= SDL_CONTROLLERAXISMOTION && e.type <= SDL_CONTROLLERBUTTONUP);
++        if (menu::handle_event(e) && input) continue;
++#endif
 +        if (e.type == SDL_KEYDOWN && !e.key.repeat && e.key.keysym.scancode == SDL_SCANCODE_F8) {
 +            g_osd_stats = !g_osd_stats;
 +            g_osd_dirty = true;
@@ -485,7 +850,17 @@ index 984d4d6..3ba4287 100644
          if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F11 && !e.key.repeat) {
              const bool full = SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN;
              SDL_SetWindowFullscreen(g_window, full ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
-@@ -269,28 +421,41 @@ struct PaceTimer {
+@@ -249,6 +448,9 @@ void show_pixels(const std::uint32_t *rgba, std::uint32_t w, std::uint32_t h) {
+ }
+ 
+ void present() {
++#ifdef PS2_MENU
++    menu::frame();
++#endif
+     if (g_gpu_present) {
+         ps2::present_frame();
+         return;
+@@ -269,28 +471,41 @@ struct PaceTimer {
      }
  };
  
@@ -538,7 +913,7 @@ index 984d4d6..3ba4287 100644
  }
  
  double resident_mb() {
-@@ -300,15 +465,22 @@ double resident_mb() {
+@@ -300,15 +515,22 @@ double resident_mb() {
      if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&task), &count) != KERN_SUCCESS) return 0.0;
      return static_cast<double>(task.resident_size) / (1024.0 * 1024.0);
  #endif
@@ -561,7 +936,7 @@ index 984d4d6..3ba4287 100644
      static std::uint64_t start = 0, frames = 0;
      static double cpu_start = 0.0, gpu_start = 0.0, emu_start = 0.0, vu_start = 0.0, gs_start = 0.0;
      static std::uint64_t interpreted_start = 0;
-@@ -324,6 +496,17 @@ void show_speed() {
+@@ -324,6 +546,17 @@ void show_speed() {
          interpreted_start = ps2::vu1_interpreted_calls();
      }
      ++frames;
@@ -579,7 +954,7 @@ index 984d4d6..3ba4287 100644
      const double seconds = static_cast<double>(now - start) / static_cast<double>(SDL_GetPerformanceFrequency());
      if (seconds < 1.0) return;
      const double cpu = process_cpu_seconds(), gpu = ps2::gpu_busy_ms(), emu = emu_idle(), vu = ps2::vu_thread_idle_ms(), gs = ps2::thread_waited_ms(2);
-@@ -333,11 +516,35 @@ void show_speed() {
+@@ -333,11 +566,35 @@ void show_speed() {
      std::snprintf(title, sizeof title, "ps2-web-recomp  %.1f fps  CPU %.0f%%  GPU %.0f%%  idle emu %.0f%% vu %.0f%% gs %.0f%%  RAM %.0f MB  audio %.0f ms",
                    static_cast<double>(frames) / seconds, (cpu - cpu_start) / seconds * 100.0, (gpu - gpu_start) / (seconds * 10.0),
                    (emu - emu_start) / (seconds * 10.0), (vu - vu_start) / (seconds * 10.0), (gs - gs_start) / (seconds * 10.0), resident_mb(), queued);
@@ -615,6 +990,44 @@ index 984d4d6..3ba4287 100644
      start = now;
      frames = 0;
      emu_start = emu;
+@@ -401,6 +658,10 @@ int run_window(const std::function<int()> &emulate) {
+     std::fprintf(stderr, "[window] %s\n", g_gpu_present ? "presenting through WebGPU" : "presenting through SDL");
+     if (!g_gpu_present && !create_renderer()) return 1;
+     const bool threads = !std::getenv("PS2_ONE_THREAD") && !std::getenv("PS2_TIME") && ps2::g_options.frames_dir.empty();
++#ifdef PS2_MENU
++    // Only a threaded run can pause the game while the menu is open: elsewhere nothing would draw it.
++    menu::init(g_window, threads && g_gpu_present);
++#endif
+     if (!threads) {
+         ps2::g_options.on_vblank = on_vblank;
+         return emulate();
+@@ -422,9 +683,25 @@ int run_window(const std::function<int()> &emulate) {
+         ps2::wake_render_thread();
+     });
+     const std::function<void(const std::uint32_t *, std::uint32_t, std::uint32_t)> copy = show_pixels, none;
++    const std::function<void()> before_present = [] {
++        show_speed();
++#ifdef PS2_MENU
++        menu::frame();
++#endif
++    };
+     while (!done.load()) {
+         poll();
+-        if (ps2::render_pending(g_gpu_present, g_gpu_present ? none : copy, show_speed, 8.0) == ps2::Rendered::idle) ps2::wait_render_work(4);
++#ifdef PS2_MENU
++        // Paused under the menu: no new frames come, so the last one is shown again with the menu.
++        if (menu::open() && ps2::paused()) {
++            ps2::render_pending(g_gpu_present, none, nullptr, 8.0);
++            menu::frame();
++            ps2::present_again();
++            SDL_Delay(15);
++            continue;
++        }
++#endif
++        if (ps2::render_pending(g_gpu_present, g_gpu_present ? none : copy, before_present, 8.0) == ps2::Rendered::idle) ps2::wait_render_work(4);
+     }
+     emulation.join();
+     SDL_Quit();
 diff --git a/recomp/codegen.cpp b/recomp/codegen.cpp
 index 47079a1..d6f5d91 100644
 --- a/recomp/codegen.cpp
@@ -1332,6 +1745,49 @@ index 45ff208..3f6b54b 100644
  using UnitFn = void (*)(Cpu &, std::uint32_t entry, std::uint32_t depth);
  
  inline constexpr std::uint32_t kMaxDepth = 192;
+diff --git a/runtime/include/ps2/graphics.hpp b/runtime/include/ps2/graphics.hpp
+new file mode 100644
+index 0000000..bd84157
+--- /dev/null
++++ b/runtime/include/ps2/graphics.hpp
+@@ -0,0 +1,37 @@
++#pragma once
++
++#include <functional>
++#include <string>
++
++// The player's graphics settings, shared by the launcher and the game (settings.ini): the launcher edits
++// them, the game reads them at start (--settings) and its F10 menu changes them while playing.
++namespace ps2 {
++
++enum class Api { d3d12, vulkan };
++
++struct Graphics {
++    Api api = Api::vulkan;  // the proven path; Direct3D 12 is the newer, less played one
++    int scale = 1;  // 1..6
++    bool vsync = true, widescreen = false, fullscreen = false, fxaa = false, fsr = false;
++    bool sharpen = false, bloom = false, deband = false, crt = false, crt_curvature = false, vignette = false, grain = false;
++    float sharpen_strength = 0.5f, bloom_strength = 0.5f, crt_scanlines = 0.5f, vignette_strength = 0.5f, grain_strength = 0.3f;  // 0..1
++    float brightness = 0.0f, contrast = 1.0f, saturation = 1.0f, gamma = 1.0f;  // -0.5..0.5, 0.5..1.5, 0..2, 0.5..2
++};
++
++// Missing keys keep their defaults and values out of range are clamped.
++Graphics load_graphics(const std::string &ini);
++// Rewrites the graphics keys and keeps every other line (the launcher's iso=).
++void save_graphics(const std::string &ini, const Graphics &g);
++// "1x (~480p)" to "6x (~2880p, 5K)": the game's 448 lines times the scale, named after the nearest
++// common resolution.
++const char *scale_label(int scale);
++
++// The running game's settings: a copy, safe to take from any thread.
++Graphics graphics();
++// Applies a change while playing: every listener sees the old and the new settings.
++void set_graphics(const Graphics &g);
++void add_graphics_listener(std::function<void(const Graphics &before, const Graphics &now)> listener);
++// The settings file the game was started with (--settings), empty if none.
++std::string &graphics_file();
++
++}
 diff --git a/runtime/include/ps2/iop_gen.hpp b/runtime/include/ps2/iop_gen.hpp
 new file mode 100644
 index 0000000..dc1f0a3
@@ -1459,7 +1915,7 @@ index 6a919d2..efd4b09 100644
  void watch_span(std::uint32_t a, std::uint32_t n, const char *via);
  void init_watch();
 diff --git a/runtime/include/ps2/system.hpp b/runtime/include/ps2/system.hpp
-index f447223..47d9b36 100644
+index f447223..e717fde 100644
 --- a/runtime/include/ps2/system.hpp
 +++ b/runtime/include/ps2/system.hpp
 @@ -59,6 +59,12 @@ struct Options {
@@ -1484,10 +1940,27 @@ index f447223..47d9b36 100644
      void *display = nullptr;
      std::uint64_t window = 0;
      void *surface = nullptr;
-@@ -113,6 +119,9 @@ struct WindowTarget {
+@@ -113,6 +119,26 @@ struct WindowTarget {
  bool attach_window(const WindowTarget &target);
  void resize_window(std::uint32_t width, std::uint32_t height);
  bool present_frame();
++// A message for the player about the display (a graphics API fallback), once; empty if none.
++std::string take_display_notice();
++// The internal resolution the GPU renderer is using (1 to 6).
++std::uint32_t gpu_scale();
++// True when switching widescreen while playing takes full effect (see system.cpp).
++bool widescreen_live();
++// The F10 menu (host/menu.cpp) pauses the game while it is open: the emulation waits at the next frame
++// boundary until the pause is lifted. Threaded window runs only: elsewhere nothing would draw the menu.
++void request_pause(bool on);
++bool paused();  // the emulation is waiting in a pause
++// Draws over the presentation pass, after the picture and the on-screen text (the menu's ImGui draw
++// data); the argument is the WGPURenderPassEncoder.
++void set_menu_draw(void (*draw)(void *render_pass));
++void *gpu_device();                  // the WGPUDevice
++std::uint32_t gpu_surface_format();  // the window's WGPUTextureFormat
++// Shows the last picture again, with the menu, without advancing the game (while paused).
++bool present_again();
 +// The on-screen display: an RGBA image shown over the top-left corner of the window (WebGPU
 +// presentation only); nullptr hides it.
 +void set_osd(const std::uint32_t *rgba, std::uint32_t width, std::uint32_t height);
@@ -1746,6 +2219,150 @@ index 34fe4f2..cf942cb 100644
          buffer.resize(bytes);
          for (std::uint32_t i = 0; i < qwc; ++i) std::memcpy(buffer.data() + i * 16, source(address + i * 16), 16);
          data = buffer.data();
+diff --git a/runtime/src/graphics.cpp b/runtime/src/graphics.cpp
+new file mode 100644
+index 0000000..e8d79de
+--- /dev/null
++++ b/runtime/src/graphics.cpp
+@@ -0,0 +1,138 @@
++#include "ps2/graphics.hpp"
++
++#include <algorithm>
++#include <cstdlib>
++#include <fstream>
++#include <map>
++#include <mutex>
++#include <sstream>
++#include <vector>
++
++namespace ps2 {
++
++namespace {
++
++std::mutex g_mutex;
++Graphics g_graphics;
++std::vector<std::function<void(const Graphics &, const Graphics &)>> g_listeners;
++
++// The graphics keys, in the order they're written.
++const char *const kKeys[] = {"api",         "scale",       "vsync",         "widescreen",    "fullscreen", "aa",         "upscale",
++                             "sharpen",     "sharpen_strength", "bloom",    "bloom_strength", "brightness", "contrast",  "saturation",
++                             "gamma",       "deband",      "crt",           "crt_scanlines", "crt_curvature", "vignette", "vignette_strength",
++                             "grain",       "grain_strength"};
++
++bool is_graphics_key(const std::string &k) {
++    return std::find_if(std::begin(kKeys), std::end(kKeys), [&](const char *g) { return k == g; }) != std::end(kKeys);
++}
++
++std::map<std::string, std::string> read_keys(const std::string &ini) {
++    std::map<std::string, std::string> keys;
++    std::ifstream in(ini);
++    std::string line;
++    while (std::getline(in, line)) {
++        if (!line.empty() && line.back() == '\r') line.pop_back();
++        if (const auto eq = line.find('='); eq != std::string::npos) keys[line.substr(0, eq)] = line.substr(eq + 1);
++    }
++    return keys;
++}
++
++}
++
++Graphics load_graphics(const std::string &ini) {
++    const auto keys = read_keys(ini);
++    Graphics g;
++    const auto text = [&](const char *k) -> const std::string * {
++        const auto it = keys.find(k);
++        return it == keys.end() ? nullptr : &it->second;
++    };
++    const auto flag = [&](const char *k, bool &v) {
++        if (const std::string *s = text(k)) v = *s == "1";
++    };
++    const auto number = [&](const char *k, float &v, float lo, float hi) {
++        if (const std::string *s = text(k)) v = std::clamp(std::strtof(s->c_str(), nullptr), lo, hi);
++    };
++    if (const std::string *s = text("api")) g.api = *s == "d3d12" ? Api::d3d12 : Api::vulkan;
++    if (const std::string *s = text("scale")) g.scale = std::clamp(std::atoi(s->c_str()), 1, 6);
++    flag("vsync", g.vsync);
++    flag("widescreen", g.widescreen);
++    flag("fullscreen", g.fullscreen);
++    if (const std::string *s = text("aa")) g.fxaa = *s == "fxaa";
++    if (const std::string *s = text("upscale")) g.fsr = *s == "fsr";
++    flag("sharpen", g.sharpen);
++    number("sharpen_strength", g.sharpen_strength, 0.0f, 1.0f);
++    flag("bloom", g.bloom);
++    number("bloom_strength", g.bloom_strength, 0.0f, 1.0f);
++    number("brightness", g.brightness, -0.5f, 0.5f);
++    number("contrast", g.contrast, 0.5f, 1.5f);
++    number("saturation", g.saturation, 0.0f, 2.0f);
++    number("gamma", g.gamma, 0.5f, 2.0f);
++    flag("deband", g.deband);
++    flag("crt", g.crt);
++    number("crt_scanlines", g.crt_scanlines, 0.0f, 1.0f);
++    flag("crt_curvature", g.crt_curvature);
++    flag("vignette", g.vignette);
++    number("vignette_strength", g.vignette_strength, 0.0f, 1.0f);
++    flag("grain", g.grain);
++    number("grain_strength", g.grain_strength, 0.0f, 1.0f);
++    return g;
++}
++
++void save_graphics(const std::string &ini, const Graphics &g) {
++    std::vector<std::string> kept;
++    {
++        std::ifstream in(ini);
++        std::string line;
++        while (std::getline(in, line)) {
++            if (!line.empty() && line.back() == '\r') line.pop_back();
++            const auto eq = line.find('=');
++            if (eq == std::string::npos || !is_graphics_key(line.substr(0, eq))) kept.push_back(line);
++        }
++    }
++    std::ostringstream out;
++    for (const std::string &line : kept)
++        if (!line.empty()) out << line << "\n";
++    const auto b = [](bool v) { return v ? "1" : "0"; };
++    out << "api=" << (g.api == Api::vulkan ? "vulkan" : "d3d12") << "\nscale=" << g.scale << "\nvsync=" << b(g.vsync) << "\nwidescreen=" << b(g.widescreen)
++        << "\nfullscreen=" << b(g.fullscreen) << "\naa=" << (g.fxaa ? "fxaa" : "off") << "\nupscale=" << (g.fsr ? "fsr" : "default")
++        << "\nsharpen=" << b(g.sharpen) << "\nsharpen_strength=" << g.sharpen_strength << "\nbloom=" << b(g.bloom)
++        << "\nbloom_strength=" << g.bloom_strength << "\nbrightness=" << g.brightness << "\ncontrast=" << g.contrast << "\nsaturation=" << g.saturation
++        << "\ngamma=" << g.gamma << "\ndeband=" << b(g.deband) << "\ncrt=" << b(g.crt) << "\ncrt_scanlines=" << g.crt_scanlines
++        << "\ncrt_curvature=" << b(g.crt_curvature) << "\nvignette=" << b(g.vignette) << "\nvignette_strength=" << g.vignette_strength
++        << "\ngrain=" << b(g.grain) << "\ngrain_strength=" << g.grain_strength << "\n";
++    std::ofstream(ini, std::ios::binary) << out.str();
++}
++
++const char *scale_label(int scale) {
++    static const char *const kLabels[] = {"1x (~480p)", "2x (~900p)", "3x (~1440p)", "4x (~1800p)", "5x (~2160p, 4K)", "6x (~2880p, 5K)"};
++    return kLabels[std::clamp(scale, 1, 6) - 1];
++}
++
++Graphics graphics() {
++    std::lock_guard lock(g_mutex);
++    return g_graphics;
++}
++
++void set_graphics(const Graphics &g) {
++    Graphics before;
++    std::vector<std::function<void(const Graphics &, const Graphics &)>> listeners;
++    {
++        std::lock_guard lock(g_mutex);
++        before = g_graphics;
++        g_graphics = g;
++        listeners = g_listeners;
++    }
++    for (const auto &l : listeners) l(before, g);
++}
++
++void add_graphics_listener(std::function<void(const Graphics &, const Graphics &)> listener) {
++    std::lock_guard lock(g_mutex);
++    g_listeners.push_back(std::move(listener));
++}
++
++std::string &graphics_file() {
++    static std::string path;
++    return path;
++}
++
++}
 diff --git a/runtime/src/gs/gif.cpp b/runtime/src/gs/gif.cpp
 index b5e54c8..e92ba12 100644
 --- a/runtime/src/gs/gif.cpp
@@ -1795,11 +2412,240 @@ index 6ef5e1a..3395cbb 100644
  void transfer(int path, const std::uint8_t *data, std::uint32_t qwc);
  void render(int path, const std::uint8_t *data, std::uint32_t qwc);
  void render_reset();
+diff --git a/runtime/src/gs/gpu/effects.wgsl b/runtime/src/gs/gpu/effects.wgsl
+new file mode 100644
+index 0000000..bc6da72
+--- /dev/null
++++ b/runtime/src/gs/gpu/effects.wgsl
+@@ -0,0 +1,209 @@
++// Picture effects on the final picture (the player's graphics options), after blit.wgsl has drawn the
++// game picture into an offscreen texture the size of the window's picture area. Every effect is off
++// unless its flag is set; with all of them off, gpu.cpp skips this file entirely.
++//   easu: the FSR-style upscale, from the picture at its internal resolution to the window's size
++//   bright, blur_h, blur_v: bloom's bright-pass and Gaussian blur, at half resolution
++//   post: in this order, CRT curvature (it bends where everything is read), sharpening, bloom added back,
++//         colour, debanding, CRT scanlines and mask, vignette, film grain; written to the window
++
++struct Post {
++    flags: u32,   // 1 sharpen, 2 bloom, 4 colour, 8 deband, 16 CRT, 32 CRT curvature, 64 vignette, 128 grain
++    frame: u32,
++    out_w: f32,
++    out_h: f32,
++    sharpen: f32,
++    bloom: f32,
++    brightness: f32,
++    contrast: f32,
++    saturation: f32,
++    gamma: f32,
++    scanlines: f32,
++    vignette: f32,
++    grain: f32,
++    lines: f32,   // the game picture's lines (448), for the scanlines
++    pad0: f32,
++    pad1: f32,
++}
++
++@group(0) @binding(0) var source: texture_2d<f32>;
++@group(0) @binding(1) var glow: texture_2d<f32>;
++@group(0) @binding(2) var smp: sampler;
++@group(0) @binding(3) var<uniform> post: Post;
++
++struct VertexOut {
++    @builtin(position) position: vec4<f32>,
++    @location(0) uv: vec2<f32>,
++}
++
++@vertex
++fn vs(@builtin(vertex_index) i: u32) -> VertexOut {
++    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
++    var o: VertexOut;
++    o.position = vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
++    o.uv = vec2<f32>(p.x, 1.0 - p.y);
++    return o;
++}
++
++fn at(t: texture_2d<f32>, uv: vec2<f32>) -> vec3<f32> { return textureSampleLevel(t, smp, uv, 0.0).rgb; }
++
++fn luma(c: vec3<f32>) -> f32 { return dot(c, vec3<f32>(0.299, 0.587, 0.114)); }
++
++// Bloom: the parts brighter than luma 0.7, ramping in to full above it.
++@fragment
++fn bright(in: VertexOut) -> @location(0) vec4<f32> {
++    let c = at(source, in.uv);
++    let k = clamp((luma(c) - 0.7) / 0.3, 0.0, 1.0);
++    return vec4<f32>(c * k, 1.0);
++}
++
++// A 9-tap Gaussian (sigma about 2 texels), one direction per pass.
++const kWeights = array<f32, 5>(0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
++
++fn blur(uv: vec2<f32>, dir: vec2<f32>) -> vec3<f32> {
++    var c = at(source, uv) * kWeights[0];
++    for (var k = 1; k < 5; k++) {
++        let d = dir * f32(k);
++        c += (at(source, uv + d) + at(source, uv - d)) * kWeights[k];
++    }
++    return c;
++}
++
++@fragment
++fn blur_h(in: VertexOut) -> @location(0) vec4<f32> {
++    let size = vec2<f32>(textureDimensions(source));
++    return vec4<f32>(blur(in.uv, vec2<f32>(1.0 / size.x, 0.0)), 1.0);
++}
++
++@fragment
++fn blur_v(in: VertexOut) -> @location(0) vec4<f32> {
++    let size = vec2<f32>(textureDimensions(source));
++    return vec4<f32>(blur(in.uv, vec2<f32>(0.0, 1.0 / size.y)), 1.0);
++}
++
++// Contrast-adaptive sharpening (after AMD's published CAS idea): each pixel is pushed away from its four
++// neighbours' average, less where the neighbourhood already has strong contrast, so edges don't ring.
++fn sharpened(uv: vec2<f32>) -> vec3<f32> {
++    let t = 1.0 / vec2<f32>(post.out_w, post.out_h);
++    let c = at(source, uv);
++    let n = at(source, uv + vec2<f32>(0.0, -t.y));
++    let s = at(source, uv + vec2<f32>(0.0, t.y));
++    let e = at(source, uv + vec2<f32>(t.x, 0.0));
++    let w = at(source, uv + vec2<f32>(-t.x, 0.0));
++    let lo = min(c, min(min(n, s), min(e, w)));
++    let hi = max(c, max(max(n, s), max(e, w)));
++    let amp = sqrt(clamp(min(lo, 1.0 - hi) / max(hi, vec3<f32>(1e-5)), vec3<f32>(0.0), vec3<f32>(1.0)));
++    let weight = -amp / mix(8.0, 5.0, post.sharpen);
++    return clamp((c + (n + s + e + w) * weight) / (1.0 + 4.0 * weight), vec3<f32>(0.0), vec3<f32>(1.0));
++}
++
++// The FSR-style upscale, this port's own code after the published idea of FSR 1's EASU: 12 source pixels
++// around the output point, weighted by a Lanczos-like kernel that is stretched along the local edge
++// (so edges are smoothed along their length and stay sharp across it), and the result clamped to the
++// four nearest pixels' range so it can't ring.
++fn texel(p: vec2<i32>) -> vec3<f32> {
++    let size = vec2<i32>(textureDimensions(source));
++    return textureLoad(source, clamp(p, vec2<i32>(0), size - 1), 0).rgb;
++}
++
++fn kernel(d2: f32, lobe: f32) -> f32 {
++    let x = min(d2, 1.0 / lobe);  // past 1/lobe the window would rise into a second, wrong lobe
++    let a = 0.4 * x - 1.0;
++    let b = lobe * x - 1.0;
++    return (1.5625 * a * a - 0.5625) * (b * b);
++}
++
++@fragment
++fn easu(in: VertexOut) -> @location(0) vec4<f32> {
++    let size = vec2<f32>(textureDimensions(source));
++    let p = in.uv * size - 0.5;
++    let base = floor(p);
++    let f = p - base;
++    let b = vec2<i32>(base);
++    let c00 = texel(b);
++    let c10 = texel(b + vec2<i32>(1, 0));
++    let c01 = texel(b + vec2<i32>(0, 1));
++    let c11 = texel(b + vec2<i32>(1, 1));
++    let l00 = luma(c00);
++    let l10 = luma(c10);
++    let l01 = luma(c01);
++    let l11 = luma(c11);
++    var dir = vec2<f32>((l10 - l00) + (l11 - l01), (l01 - l00) + (l11 - l10));
++    let strength = length(dir);
++    dir = select(vec2<f32>(1.0, 0.0), dir / max(strength, 1e-6), strength > 1e-5);
++    let edge = clamp(strength * 4.0, 0.0, 1.0);
++    let stretch = 1.0 + edge;        // longer along the edge where there is one
++    let lobe = 0.5 - 0.25 * edge;    // a wider lobe (softer) on flat areas, sharper on edges
++    var sum = vec3<f32>(0.0);
++    var weight = 0.0;
++    for (var y = -1; y <= 2; y++) {
++        for (var x = -1; x <= 2; x++) {
++            if ((x == -1 || x == 2) && (y == -1 || y == 2)) { continue; }  // 12 taps: no corners
++            let o = vec2<f32>(f32(x), f32(y)) - f;
++            let r = vec2<f32>(dot(o, dir), dot(o, vec2<f32>(-dir.y, dir.x)) / stretch);
++            let w = kernel(dot(r, r), lobe);
++            sum += texel(b + vec2<i32>(x, y)) * w;
++            weight += w;
++        }
++    }
++    let lo = min(min(c00, c10), min(c01, c11));
++    let hi = max(max(c00, c10), max(c01, c11));
++    return vec4<f32>(clamp(sum / max(weight, 1e-5), lo, hi), 1.0);
++}
++
++fn hash(p: vec2<f32>) -> f32 { return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453); }
++
++// Debanding: where four samples 16 pixels around are all within 1.5/255 of this pixel, the area is a
++// gradient that 8 bits cut into bands, so the pixel takes their average; then a little dither.
++fn debanded(uv: vec2<f32>, pixel: vec2<f32>, c: vec3<f32>) -> vec3<f32> {
++    let centre = at(source, uv);
++    let r = 16.0 / vec2<f32>(post.out_w, post.out_h) * (0.5 + 0.5 * hash(pixel + 1.7));
++    let a = hash(pixel) * 6.2831853;
++    var sum = vec3<f32>(0.0);
++    var smooth_area = true;
++    for (var k = 0; k < 4; k++) {
++        let angle = a + f32(k) * 1.5707963;
++        let s = at(source, uv + vec2<f32>(cos(angle), sin(angle)) * r);
++        smooth_area = smooth_area && all(abs(s - centre) < vec3<f32>(1.5 / 255.0));
++        sum += s;
++    }
++    var out = c;
++    if (smooth_area) { out = c + (sum * 0.25 - centre); }
++    return out + (hash(pixel + 3.1) - 0.5) / 255.0;
++}
++
++@fragment
++fn fs_post(in: VertexOut) -> @location(0) vec4<f32> {
++    var uv = in.uv;
++    if ((post.flags & 32u) != 0u) {
++        // CRT curvature: a gentle barrel (0.03); outside the bent picture is black.
++        let cc = uv * 2.0 - 1.0;
++        uv = cc * (1.0 + 0.03 * dot(cc, cc)) * 0.5 + 0.5;
++        if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
++    }
++    var c = at(source, uv);
++    if ((post.flags & 1u) != 0u) { c = sharpened(uv); }
++    if ((post.flags & 2u) != 0u) { c = c + at(glow, uv) * post.bloom; }
++    if ((post.flags & 4u) != 0u) {
++        c = (c - 0.5) * post.contrast + 0.5 + post.brightness;
++        c = mix(vec3<f32>(luma(c)), c, post.saturation);
++        c = pow(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / post.gamma));
++    }
++    if ((post.flags & 8u) != 0u) { c = debanded(uv, in.position.xy, c); }
++    if ((post.flags & 16u) != 0u) {
++        // Scanlines at the game's own lines, then an aperture-grille mask by output column.
++        let row = fract(uv.y * post.lines);
++        let scan = mix(1.0, 0.55 + 0.45 * sin(row * 3.14159265), post.scanlines);
++        let column = u32(in.position.x) % 3u;
++        var mask = vec3<f32>(0.85);
++        mask[column] = 1.0;
++        c = c * scan * mix(vec3<f32>(1.0), mask, 0.5 * post.scanlines) * (1.0 + 0.25 * post.scanlines);
++    }
++    if ((post.flags & 64u) != 0u) {
++        let d = distance(uv, vec2<f32>(0.5)) * 1.4142136;
++        c = c * (1.0 - post.vignette * smoothstep(0.4, 1.0, d));
++    }
++    if ((post.flags & 128u) != 0u) {
++        c = c + (hash(in.position.xy + f32(post.frame % 4096u) * 7.31) - 0.5) * 0.12 * post.grain;
++    }
++    return vec4<f32>(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
++}
 diff --git a/runtime/src/gs/gpu/gpu.cpp b/runtime/src/gs/gpu/gpu.cpp
-index 5a13c3e..4f96b93 100644
+index 5a13c3e..2080591 100644
 --- a/runtime/src/gs/gpu/gpu.cpp
 +++ b/runtime/src/gs/gpu/gpu.cpp
-@@ -15,6 +15,7 @@
+@@ -1,4 +1,5 @@
+ #include "gpu.hpp"
++#include "ps2/graphics.hpp"
+ #include "ps2/system.hpp"
+ #include "ps2/video.hpp"
+ 
+@@ -9,17 +10,21 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <chrono>
++#include <atomic>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstdlib>
  #include <cstring>
  #include <deque>
  #include <memory>
@@ -1807,7 +2653,25 @@ index 5a13c3e..4f96b93 100644
  #include <string>
  #include <unordered_map>
  
-@@ -52,9 +53,20 @@ std::uint32_t g_surface_width = 0, g_surface_height = 0;
+ extern const char kGsShader[];
+ extern const char kBlitShader[];
++extern const char kEffectsShader[];
+ 
+ namespace ps2::gs {
+ void swizzle_tables(std::vector<std::uint32_t> &out);
+@@ -48,13 +53,32 @@ WGPUAdapter g_adapter = nullptr;
+ WGPUSurface g_surface = nullptr;
+ WGPUTextureFormat g_surface_format = WGPUTextureFormat_Undefined;
+ WGPUPresentMode g_present_mode = WGPUPresentMode_Fifo;
++// The presentation modes the surface offers, and a vsync change waiting for the next present.
++std::vector<WGPUPresentMode> g_present_modes;
++std::atomic<bool> g_reconfigure{false};
++// An internal resolution the player chose while playing, applied at the next present (0: none).
++std::atomic<std::uint32_t> g_wanted_scale{0};
++// A message for the player about the display (a graphics API fallback), shown once by the window.
++std::mutex g_notice_mutex;
++std::string g_notice;
+ std::uint32_t g_surface_width = 0, g_surface_height = 0;
  WGPURenderPipeline g_blit = nullptr;
  WGPUBindGroup g_blit_group = nullptr;
  WGPUBuffer g_blit_params = nullptr;
@@ -1828,41 +2692,68 @@ index 5a13c3e..4f96b93 100644
  
  std::uint32_t field_base(std::uint32_t field) { return g_copy_words + (field & 1u) * g_field_words; }
  
-@@ -979,6 +991,12 @@ void submit(WGPUTextureView present_view = nullptr) {
-         wgpuRenderPassEncoderSetPipeline(rp, g_blit);
-         wgpuRenderPassEncoderSetBindGroup(rp, 0, g_blit_group, 0, nullptr);
-         wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
-+        if (g_overlay_shown && g_overlay) {
-+            wgpuRenderPassEncoderSetViewport(rp, 0.0f, 0.0f, w, h, 0.0f, 1.0f);
-+            wgpuRenderPassEncoderSetPipeline(rp, g_overlay);
-+            wgpuRenderPassEncoderSetBindGroup(rp, 0, g_overlay_group, 0, nullptr);
-+            wgpuRenderPassEncoderDraw(rp, 6, 1, 0, 0);
+@@ -824,6 +848,81 @@ void rebuild_group() {
+     g_group = wgpuDeviceCreateBindGroup(g_device, &d);
+ }
+ 
++WGPUBindGroupLayout g_blit_layout = nullptr;
++void (*g_menu_draw)(void *) = nullptr;
++WGPUBuffer g_blit_params_lo = nullptr;
++WGPUBindGroup g_blit_group_lo = nullptr;
++
++// The presentation shader reads the displayed fields from g_scratch.
++void rebuild_blit_group() {
++    if (!g_blit_layout) return;
++    if (g_blit_group) wgpuBindGroupRelease(g_blit_group);
++    WGPUBindGroupEntry be[2] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
++    be[0].binding = 0;
++    be[0].buffer = g_scratch;
++    be[0].size = WGPU_WHOLE_SIZE;
++    be[1].binding = 1;
++    be[1].buffer = g_blit_params;
++    be[1].size = 32;
++    WGPUBindGroupDescriptor bd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
++    bd.layout = g_blit_layout;
++    bd.entryCount = 2;
++    bd.entries = be;
++    g_blit_group = wgpuDeviceCreateBindGroup(g_device, &bd);
++    // The same draw at the internal resolution (the FSR-style upscale's input): its own parameters.
++    if (!g_blit_params_lo) g_blit_params_lo = make_buffer(32, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
++    if (g_blit_group_lo) wgpuBindGroupRelease(g_blit_group_lo);
++    be[1].buffer = g_blit_params_lo;
++    g_blit_group_lo = wgpuDeviceCreateBindGroup(g_device, &bd);
++}
++
++// Everything the internal resolution sizes: the scaled copy of the GS memory, the scratch and
++// readback buffers, the tile maps, and the compute pipelines (built with the SCALE constant). Called
++// at start and again when the player changes the internal resolution.
++bool create_scaled(std::uint32_t scale) {
++    g_scale = std::clamp<std::uint32_t>(scale, 1u, 6u);
++    g_copy_words = (1u << 20) * g_scale * g_scale;
++    g_tiles_per_row = (2048 * static_cast<int>(g_scale) + 15) / 16;
++    g_tile_count.assign(static_cast<std::size_t>(g_tiles_per_row) * g_tiles_per_row, 0);
++    g_tile_fill.assign(static_cast<std::size_t>(g_tiles_per_row) * g_tiles_per_row, 0);
++    g_field_words = (1u << 19) * g_scale * g_scale;
++    for (WGPUBuffer *b : {&g_vram, &g_scratch, &g_readback})
++        if (*b) {
++            wgpuBufferRelease(*b);
++            *b = nullptr;
 +        }
-         wgpuRenderPassEncoderEnd(rp);
-         wgpuRenderPassEncoderRelease(rp);
-     }
-@@ -1246,7 +1264,11 @@ bool init(Mode m) {
-     g_tile_count.assign(static_cast<std::size_t>(g_tiles_per_row) * g_tiles_per_row, 0);
-     g_tile_fill.assign(static_cast<std::size_t>(g_tiles_per_row) * g_tiles_per_row, 0);
-     g_field_words = (1u << 19) * g_scale * g_scale;
--    g_vram = make_buffer(static_cast<std::uint64_t>(kMemorySize) * g_scale * g_scale, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
-+    // High color (see gs.wgsl) keeps a full colour for each 16-bit pixel past the GS memory:
-+    // two words per GS word. PS2_EXACT_COLOR=1 shows 16-bit buffers as the PS2 stores them.
-+    g_high_color = std::getenv("PS2_EXACT_COLOR") == nullptr;
 +    g_vram = make_buffer(static_cast<std::uint64_t>(kMemorySize) * g_scale * g_scale * (g_high_color ? 3u : 1u),
 +                         WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
-     std::vector<std::uint32_t> tables;
-     swizzle_tables(tables);
-     g_tables = make_buffer(tables.size() * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst);
-@@ -1298,11 +1320,13 @@ bool init(Mode m) {
-         cd.layout = g_pipeline_layout;
-         cd.compute.module = module;
-         cd.compute.entryPoint = view(kEntryPoints[i]);
--        WGPUConstantEntry constant = WGPU_CONSTANT_ENTRY_INIT;
--        constant.key = view("SCALE");
--        constant.value = static_cast<double>(g_scale);
--        cd.compute.constantCount = 1;
--        cd.compute.constants = &constant;
++    g_scratch = make_buffer((static_cast<std::uint64_t>(g_copy_words) + 2ull * g_field_words) * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc);
++    g_readback = make_buffer(static_cast<std::uint64_t>(g_copy_words) * 4, WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst);
++    WGPUShaderSourceWGSL source = WGPU_SHADER_SOURCE_WGSL_INIT;
++    source.code = view(kGsShader);
++    WGPUShaderModuleDescriptor md = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
++    md.nextInChain = &source.chain;
++    WGPUShaderModule module = wgpuDeviceCreateShaderModule(g_device, &md);
++    for (int i = 0; i < kPipelines; ++i) {
++        if (g_pipelines[i]) wgpuComputePipelineRelease(g_pipelines[i]);
++        WGPUComputePipelineDescriptor cd = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
++        cd.layout = g_pipeline_layout;
++        cd.compute.module = module;
++        cd.compute.entryPoint = view(kEntryPoints[i]);
 +        WGPUConstantEntry constants[2] = {WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT};
 +        constants[0].key = view("SCALE");
 +        constants[0].value = static_cast<double>(g_scale);
@@ -1870,10 +2761,478 @@ index 5a13c3e..4f96b93 100644
 +        constants[1].value = g_high_color ? 1.0 : 0.0;
 +        cd.compute.constantCount = 2;
 +        cd.compute.constants = constants;
-         g_pipelines[i] = wgpuDeviceCreateComputePipeline(g_device, &cd);
-         if (!g_pipelines[i]) return false;
++        g_pipelines[i] = wgpuDeviceCreateComputePipeline(g_device, &cd);
++        if (!g_pipelines[i]) return false;
++    }
++    wgpuShaderModuleRelease(module);
++    if (g_group) rebuild_group();  // at start, ensure_capacity() creates it once the data buffers exist
++    rebuild_blit_group();
++    std::fprintf(stderr, "[gpu] internal resolution %ux\n", g_scale);
++    return true;
++}
++
+ void ensure_capacity() {
+     bool changed = false;
+     const std::uint64_t data_bytes = std::max<std::uint64_t>(g_arena.size() * 4, 16);
+@@ -911,6 +1010,223 @@ void profile_submit() {
+     g_clut_loads = 0;
+ }
+ 
++// The picture effects (effects.wgsl): render targets the size of the picture area, rebuilt when it changes.
++struct FxTarget {
++    WGPUTexture texture = nullptr;
++    WGPUTextureView view = nullptr;
++};
++WGPUBindGroupLayout g_fx_layout = nullptr;
++WGPUPipelineLayout g_fx_pipeline_layout = nullptr;
++WGPURenderPipeline g_fx_bright = nullptr, g_fx_blur_h = nullptr, g_fx_blur_v = nullptr, g_fx_post = nullptr, g_fx_easu = nullptr;
++WGPUSampler g_fx_sampler = nullptr;
++WGPUBuffer g_fx_params = nullptr;
++FxTarget g_fx_scene, g_fx_a, g_fx_b, g_fx_lo;  // the picture; bloom's two half-size buffers; the picture at its internal size (FSR)
++WGPUBindGroup g_fx_bright_group = nullptr, g_fx_blur_h_group = nullptr, g_fx_blur_v_group = nullptr, g_fx_post_group = nullptr, g_fx_easu_group = nullptr;
++std::uint32_t g_fx_width = 0, g_fx_height = 0, g_fx_lo_width = 0, g_fx_lo_height = 0;
++// The displayed picture's size at the internal resolution, from the last present.
++std::uint32_t g_internal_width = 0, g_internal_height = 0;
++
++FxTarget make_target(std::uint32_t w, std::uint32_t h) {
++    WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
++    td.size = {std::max(w, 1u), std::max(h, 1u), 1};
++    td.format = g_surface_format;
++    td.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
++    FxTarget t;
++    t.texture = wgpuDeviceCreateTexture(g_device, &td);
++    t.view = wgpuTextureCreateView(t.texture, nullptr);
++    return t;
++}
++
++void release_target(FxTarget &t) {
++    if (t.view) wgpuTextureViewRelease(t.view);
++    if (t.texture) wgpuTextureRelease(t.texture);
++    t = FxTarget{};
++}
++
++WGPUBindGroup fx_group(WGPUTextureView source, WGPUTextureView glow) {
++    WGPUBindGroupEntry e[4] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
++    e[0].binding = 0;
++    e[0].textureView = source;
++    e[1].binding = 1;
++    e[1].textureView = glow;
++    e[2].binding = 2;
++    e[2].sampler = g_fx_sampler;
++    e[3].binding = 3;
++    e[3].buffer = g_fx_params;
++    e[3].size = 64;
++    WGPUBindGroupDescriptor d = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
++    d.layout = g_fx_layout;
++    d.entryCount = 4;
++    d.entries = e;
++    return wgpuDeviceCreateBindGroup(g_device, &d);
++}
++
++// The targets for a picture area of w x h, created (or recreated) when that size changes.
++void ensure_fx_targets(std::uint32_t w, std::uint32_t h, std::uint32_t lo_w, std::uint32_t lo_h) {
++    if (w == g_fx_width && h == g_fx_height && lo_w == g_fx_lo_width && lo_h == g_fx_lo_height && g_fx_scene.view) return;
++    for (WGPUBindGroup *g : {&g_fx_bright_group, &g_fx_blur_h_group, &g_fx_blur_v_group, &g_fx_post_group, &g_fx_easu_group})
++        if (*g) {
++            wgpuBindGroupRelease(*g);
++            *g = nullptr;
++        }
++    release_target(g_fx_scene);
++    release_target(g_fx_a);
++    release_target(g_fx_b);
++    release_target(g_fx_lo);
++    g_fx_width = w;
++    g_fx_height = h;
++    g_fx_lo_width = lo_w;
++    g_fx_lo_height = lo_h;
++    if (lo_w && lo_h) {
++        g_fx_lo = make_target(lo_w, lo_h);
++        g_fx_easu_group = fx_group(g_fx_lo.view, g_fx_lo.view);
++    }
++    g_fx_scene = make_target(w, h);
++    g_fx_a = make_target(w / 2, h / 2);
++    g_fx_b = make_target(w / 2, h / 2);
++    g_fx_bright_group = fx_group(g_fx_scene.view, g_fx_scene.view);
++    g_fx_blur_h_group = fx_group(g_fx_a.view, g_fx_a.view);
++    g_fx_blur_v_group = fx_group(g_fx_b.view, g_fx_b.view);
++    g_fx_post_group = fx_group(g_fx_scene.view, g_fx_a.view);
++}
++
++void fx_pass(WGPUCommandEncoder enc, WGPUTextureView target, WGPURenderPipeline pipeline, WGPUBindGroup group) {
++    WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
++    color.view = target;
++    color.loadOp = WGPULoadOp_Clear;
++    color.storeOp = WGPUStoreOp_Store;
++    color.clearValue = WGPUColor{0.0, 0.0, 0.0, 1.0};
++    WGPURenderPassDescriptor rd = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
++    rd.colorAttachmentCount = 1;
++    rd.colorAttachments = &color;
++    WGPURenderPassEncoder rp = wgpuCommandEncoderBeginRenderPass(enc, &rd);
++    wgpuRenderPassEncoderSetPipeline(rp, pipeline);
++    wgpuRenderPassEncoderSetBindGroup(rp, 0, group, 0, nullptr);
++    wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
++    wgpuRenderPassEncoderEnd(rp);
++    wgpuRenderPassEncoderRelease(rp);
++}
++
++// The presentation pass: the game picture at its aspect ratio, then the on-screen text. With every
++// picture effect off it is a single draw of blit.wgsl into the window, as it always was; otherwise the
++// picture goes through effects.wgsl first (bloom's passes, then the final pass into the window).
++void record_present(WGPUCommandEncoder enc, WGPUTextureView present_view) {
++    const Graphics g = graphics();
++    const float w = static_cast<float>(g_surface_width), h = static_cast<float>(g_surface_height);
++    const float aspect = g_options.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
++    const float vw = std::min(w, h * aspect), vh = vw / aspect;
++    // Colour counts as on only when it isn't neutral, so the defaults draw exactly as before.
++    const bool colour = g.brightness != 0.0f || g.contrast != 1.0f || g.saturation != 1.0f || g.gamma != 1.0f;
++    const std::uint32_t fx_flags = (g.sharpen ? 1u : 0u) | (g.bloom ? 2u : 0u) | (colour ? 4u : 0u) | (g.deband ? 8u : 0u) | (g.crt ? 16u : 0u) |
++                                   (g.crt && g.crt_curvature ? 32u : 0u) | (g.vignette ? 64u : 0u) | (g.grain ? 128u : 0u);
++    // The FSR-style upscale runs only when the window's picture is larger than the internal one.
++    const bool fsr = g.fsr && g_fx_easu && g_blit_group_lo && g_internal_width && vw > static_cast<float>(g_internal_width) + 0.5f;
++    const bool effects = (fx_flags || fsr) && g_fx_post;
++    if (effects) {
++        ensure_fx_targets(static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), fsr ? g_internal_width : 0u, fsr ? g_internal_height : 0u);
++        const struct {
++            std::uint32_t flags, frame;
++            float out_w, out_h, sharpen, bloom, brightness, contrast, saturation, gamma, scanlines, vignette, grain, lines, pad0, pad1;
++        } params = {fx_flags,     static_cast<std::uint32_t>(frame_count()), vw, vh, g.sharpen_strength, g.bloom_strength, g.brightness, g.contrast,
++                    g.saturation, g.gamma, g.crt_scanlines, g.vignette_strength, g.grain_strength, 448.0f, 0.0f, 0.0f};
++        static_assert(sizeof params == 64);
++        wgpuQueueWriteBuffer(g_queue, g_fx_params, 0, &params, sizeof params);
++        if (fsr) {
++            fx_pass(enc, g_fx_lo.view, g_blit, g_blit_group_lo);
++            fx_pass(enc, g_fx_scene.view, g_fx_easu, g_fx_easu_group);
++        } else {
++            fx_pass(enc, g_fx_scene.view, g_blit, g_blit_group);
++        }
++        if (g.bloom) {
++            fx_pass(enc, g_fx_a.view, g_fx_bright, g_fx_bright_group);
++            fx_pass(enc, g_fx_b.view, g_fx_blur_h, g_fx_blur_h_group);
++            fx_pass(enc, g_fx_a.view, g_fx_blur_v, g_fx_blur_v_group);
++        }
++    }
++    WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
++    color.view = present_view;
++    color.loadOp = WGPULoadOp_Clear;
++    color.storeOp = WGPUStoreOp_Store;
++    color.clearValue = WGPUColor{0.0, 0.0, 0.0, 1.0};
++    WGPURenderPassDescriptor rd = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
++    rd.colorAttachmentCount = 1;
++    rd.colorAttachments = &color;
++    WGPURenderPassEncoder rp = wgpuCommandEncoderBeginRenderPass(enc, &rd);
++    wgpuRenderPassEncoderSetViewport(rp, (w - vw) * 0.5f, (h - vh) * 0.5f, vw, vh, 0.0f, 1.0f);
++    wgpuRenderPassEncoderSetPipeline(rp, effects ? g_fx_post : g_blit);
++    wgpuRenderPassEncoderSetBindGroup(rp, 0, effects ? g_fx_post_group : g_blit_group, 0, nullptr);
++    wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
++    if (g_overlay_shown && g_overlay) {
++        wgpuRenderPassEncoderSetViewport(rp, 0.0f, 0.0f, w, h, 0.0f, 1.0f);
++        wgpuRenderPassEncoderSetPipeline(rp, g_overlay);
++        wgpuRenderPassEncoderSetBindGroup(rp, 0, g_overlay_group, 0, nullptr);
++        wgpuRenderPassEncoderDraw(rp, 6, 1, 0, 0);
++    }
++    if (g_menu_draw) {
++        wgpuRenderPassEncoderSetViewport(rp, 0.0f, 0.0f, w, h, 0.0f, 1.0f);
++        g_menu_draw(rp);
++    }
++    wgpuRenderPassEncoderEnd(rp);
++    wgpuRenderPassEncoderRelease(rp);
++}
++
++// Development check (PS2_CAPTURE_PRESENT=<frame>:<file.ppm>): the presentation pass of that frame,
++// rendered again into a texture the window's size and written as a binary PPM, so tests can compare
++// exactly what the window shows.
++void capture_present(const char *path) {
++    const std::uint32_t w = g_surface_width, h = g_surface_height;
++    WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
++    td.size = {w, h, 1};
++    td.format = g_surface_format;
++    td.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
++    WGPUTexture texture = wgpuDeviceCreateTexture(g_device, &td);
++    WGPUTextureView tv = wgpuTextureCreateView(texture, nullptr);
++    const std::uint32_t row = (w * 4 + 255) & ~255u;
++    WGPUBuffer out = make_buffer(static_cast<std::uint64_t>(row) * h, WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst);
++    WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(g_device, nullptr);
++    record_present(enc, tv);
++    WGPUTexelCopyTextureInfo src = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
++    src.texture = texture;
++    WGPUTexelCopyBufferInfo dst = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
++    dst.buffer = out;
++    dst.layout.bytesPerRow = row;
++    dst.layout.rowsPerImage = h;
++    const WGPUExtent3D size = {w, h, 1};
++    wgpuCommandEncoderCopyTextureToBuffer(enc, &src, &dst, &size);
++    WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
++    wgpuQueueSubmit(g_queue, 1, &cmd);
++    wgpuCommandBufferRelease(cmd);
++    wgpuCommandEncoderRelease(enc);
++    bool done = false;
++    WGPUBufferMapCallbackInfo cb = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
++    cb.mode = WGPUCallbackMode_AllowProcessEvents;
++    cb.callback = [](WGPUMapAsyncStatus, WGPUStringView, void *flag, void *) { *static_cast<bool *>(flag) = true; };
++    cb.userdata1 = &done;
++    wgpuBufferMapAsync(out, WGPUMapMode_Read, 0, static_cast<std::uint64_t>(row) * h, cb);
++    wait_until(done);
++    const auto *p = static_cast<const std::uint8_t *>(wgpuBufferGetConstMappedRange(out, 0, static_cast<std::uint64_t>(row) * h));
++    const bool bgra = g_surface_format == WGPUTextureFormat_BGRA8Unorm || g_surface_format == WGPUTextureFormat_BGRA8UnormSrgb;
++    if (std::FILE *f = p ? std::fopen(path, "wb") : nullptr) {
++        std::fprintf(f, "P6\n%u %u\n255\n", w, h);
++        std::vector<std::uint8_t> line(static_cast<std::size_t>(w) * 3);
++        for (std::uint32_t y = 0; y < h; ++y) {
++            for (std::uint32_t x = 0; x < w; ++x) {
++                const std::uint8_t *px = p + static_cast<std::size_t>(y) * row + x * 4;
++                line[x * 3] = px[bgra ? 2 : 0];
++                line[x * 3 + 1] = px[1];
++                line[x * 3 + 2] = px[bgra ? 0 : 2];
++            }
++            std::fwrite(line.data(), 1, line.size(), f);
++        }
++        std::fclose(f);
++        std::fprintf(stderr, "[gpu] presented frame %llu captured to %s\n", static_cast<unsigned long long>(frame_count()), path);
++    }
++    wgpuBufferUnmap(out);
++    wgpuBufferRelease(out);
++    wgpuTextureViewRelease(tv);
++    wgpuTextureRelease(texture);
++}
++
+ // Browsers copy writes above about 1 MiB through a slower path, so large uploads go in pieces.
+ void submit(WGPUTextureView present_view = nullptr) {
+     if (g_commands.empty() && !present_view) return;
+@@ -962,26 +1278,7 @@ void submit(WGPUTextureView present_view = nullptr) {
+         wgpuCommandEncoderResolveQuerySet(enc, g_queries, 0, 2, g_query_resolve, 0);
+         wgpuCommandEncoderCopyBufferToBuffer(enc, g_query_resolve, 0, g_query_read, 0, 16);
      }
-@@ -1698,6 +1722,102 @@ void configure_surface() {
+-    if (present_view) {
+-        WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+-        color.view = present_view;
+-        color.loadOp = WGPULoadOp_Clear;
+-        color.storeOp = WGPUStoreOp_Store;
+-        color.clearValue = WGPUColor{0.0, 0.0, 0.0, 1.0};
+-        WGPURenderPassDescriptor rd = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+-        rd.colorAttachmentCount = 1;
+-        rd.colorAttachments = &color;
+-        WGPURenderPassEncoder rp = wgpuCommandEncoderBeginRenderPass(enc, &rd);
+-        const float w = static_cast<float>(g_surface_width), h = static_cast<float>(g_surface_height);
+-        const float aspect = g_options.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+-        const float vw = std::min(w, h * aspect), vh = vw / aspect;
+-        wgpuRenderPassEncoderSetViewport(rp, (w - vw) * 0.5f, (h - vh) * 0.5f, vw, vh, 0.0f, 1.0f);
+-        wgpuRenderPassEncoderSetPipeline(rp, g_blit);
+-        wgpuRenderPassEncoderSetBindGroup(rp, 0, g_blit_group, 0, nullptr);
+-        wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
+-        wgpuRenderPassEncoderEnd(rp);
+-        wgpuRenderPassEncoderRelease(rp);
+-    }
++    if (present_view) record_present(enc, present_view);
+     WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
+     wgpuQueueSubmit(g_queue, 1, &cmd);
+     wgpuCommandBufferRelease(cmd);
+@@ -1164,34 +1461,94 @@ void attrs(std::uint32_t *rec, int n, const Vertex &v, bool fst, const Vertex *c
+ 
+ Mode mode() { return g_mode; }
+ 
++#ifdef _WIN32
++extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(void *module, wchar_t *name, unsigned long size);
++extern "C" __declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned int page, unsigned long flags, const wchar_t *wide, int wide_count, char *out,
++                                                                    int out_size, const char *fallback, int *used_fallback);
++#endif
++
++// The executable's folder, with a trailing separator, in UTF-8 (empty where it can't be known).
++std::string executable_dir() {
++#ifdef _WIN32
++    wchar_t wide[1024];
++    const unsigned long n = GetModuleFileNameW(nullptr, wide, 1024);
++    if (!n || n >= 1024) return {};
++    char utf8[4096];
++    const int bytes = WideCharToMultiByte(65001, 0, wide, static_cast<int>(n), utf8, sizeof utf8, nullptr, nullptr);
++    std::string path(utf8, bytes > 0 ? static_cast<std::size_t>(bytes) : 0);
++    return path.substr(0, path.find_last_of("\\/") + 1);
++#else
++    return {};
++#endif
++}
++
+ bool init(Mode m) {
+     if (m == Mode::off) return false;
++    const auto request_adapter = [] {
++        WGPUAdapter adapter = nullptr;
++        bool adapter_done = false;
++        WGPURequestAdapterOptions options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
++        options.powerPreference = std::getenv("PS2_GPU_LOW_POWER") ? WGPUPowerPreference_LowPower : WGPUPowerPreference_HighPerformance;
++        options.forceFallbackAdapter = std::getenv("PS2_GPU_FALLBACK") != nullptr;
++        WGPURequestAdapterCallbackInfo acb = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
++        acb.mode = WGPUCallbackMode_AllowSpontaneous;
++        acb.callback = [](WGPURequestAdapterStatus status, WGPUAdapter a, WGPUStringView, void *out, void *done) {
++            if (status == WGPURequestAdapterStatus_Success) *static_cast<WGPUAdapter *>(out) = a;
++            *static_cast<bool *>(done) = true;
++        };
++        acb.userdata1 = &adapter;
++        acb.userdata2 = &adapter_done;
++        wgpuInstanceRequestAdapter(g_instance, &options, acb);
++        while (!adapter_done) pump();
++        return adapter;
++    };
++    WGPUAdapter adapter = nullptr;
+ #ifdef __EMSCRIPTEN__
+     g_instance = wgpuCreateInstance(nullptr);
++    if (!g_instance) return false;
++    adapter = request_adapter();
+ #else
+-    WGPUInstanceExtras extras = {};
+-    extras.chain.sType = static_cast<WGPUSType>(WGPUSType_InstanceExtras);
+-    extras.backends = WGPUInstanceBackend_Primary;
+-    WGPUInstanceDescriptor id = WGPU_INSTANCE_DESCRIPTOR_INIT;
+-    id.nextInChain = &extras.chain;
+-    g_instance = wgpuCreateInstance(&id);
++    // The player's graphics API, else the other one. PS2_GPU_FORCE_FAIL=vulkan (or d3d12) makes that
++    // one fail, to test the fallback.
++    // Development diagnosis (PS2_WGPU_LOG=1, or 2 for more): wgpu's own log on stderr.
++    if (const char *level = std::getenv("PS2_WGPU_LOG")) {
++        wgpuSetLogCallback([](WGPULogLevel, WGPUStringView message, void *) { std::fprintf(stderr, "[wgpu] %.*s\n", static_cast<int>(message.length), message.data); },
++                           nullptr);
++        wgpuSetLogLevel(std::atoi(level) > 1 ? WGPULogLevel_Debug : WGPULogLevel_Info);
++    }
++    const char *const force_fail = std::getenv("PS2_GPU_FORCE_FAIL");
++    const bool want_vulkan = graphics().api == Api::vulkan;
++    for (int attempt = 0; attempt < 2 && !adapter; ++attempt) {
++        const bool vulkan = attempt == 0 ? want_vulkan : !want_vulkan;
++        WGPUInstanceExtras extras = {};
++        extras.chain.sType = static_cast<WGPUSType>(WGPUSType_InstanceExtras);
++        extras.backends = vulkan ? WGPUInstanceBackend_Vulkan : WGPUInstanceBackend_DX12;
++        // Direct3D 12 compiles the shaders with DXC (dxcompiler.dll beside the executable): Windows' own
++        // FXC crashes on the GS raster shader. wgpu loads it with LoadLibraryExW's safe search flags,
++        // which need an absolute path.
++        static const std::string dxc = executable_dir() + "dxcompiler.dll";
++        if (!vulkan) {
++            extras.dx12ShaderCompiler = WGPUDx12Compiler_Dxc;
++            extras.dxcPath = view(dxc.c_str());
++        }
++        WGPUInstanceDescriptor id = WGPU_INSTANCE_DESCRIPTOR_INIT;
++        id.nextInChain = &extras.chain;
++        g_instance = wgpuCreateInstance(&id);
++        if (!g_instance) continue;
++        if (!(force_fail && std::strcmp(force_fail, vulkan ? "vulkan" : "d3d12") == 0)) adapter = request_adapter();
++        if (adapter) {
++            if (attempt) {
++                const std::string notice = vulkan ? "Direct3D 12 unavailable, using Vulkan" : "Vulkan unavailable, using Direct3D 12";
++                std::fprintf(stderr, "[gpu] %s\n", notice.c_str());
++                std::lock_guard lock(g_notice_mutex);
++                g_notice = notice;
++            }
++            break;
++        }
++        wgpuInstanceRelease(g_instance);
++        g_instance = nullptr;
++    }
+ #endif
+-    if (!g_instance) return false;
+-    WGPUAdapter adapter = nullptr;
+-    bool adapter_done = false;
+-    WGPURequestAdapterOptions options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
+-    options.powerPreference = std::getenv("PS2_GPU_LOW_POWER") ? WGPUPowerPreference_LowPower : WGPUPowerPreference_HighPerformance;
+-    options.forceFallbackAdapter = std::getenv("PS2_GPU_FALLBACK") != nullptr;
+-    WGPURequestAdapterCallbackInfo acb = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
+-    acb.mode = WGPUCallbackMode_AllowSpontaneous;
+-    acb.callback = [](WGPURequestAdapterStatus status, WGPUAdapter a, WGPUStringView, void *out, void *done) {
+-        if (status == WGPURequestAdapterStatus_Success) *static_cast<WGPUAdapter *>(out) = a;
+-        *static_cast<bool *>(done) = true;
+-    };
+-    acb.userdata1 = &adapter;
+-    acb.userdata2 = &adapter_done;
+-    wgpuInstanceRequestAdapter(g_instance, &options, acb);
+-    while (!adapter_done) pump();
+     if (!adapter) {
+         std::fprintf(stderr, "[gpu] no adapter\n");
+         return false;
+@@ -1199,6 +1556,7 @@ bool init(Mode m) {
+     WGPUAdapterInfo info = WGPU_ADAPTER_INFO_INIT;
+     if (wgpuAdapterGetInfo(adapter, &info) == WGPUStatus_Success) {
+         std::fprintf(stderr, "[gpu] %.*s (%.*s)\n", static_cast<int>(info.device.length), info.device.data, static_cast<int>(info.description.length), info.description.data);
++        std::fprintf(stderr, "[gpu] backend %s\n", info.backendType == WGPUBackendType_Vulkan ? "Vulkan" : info.backendType == WGPUBackendType_D3D12 ? "D3D12" : "other");
+         wgpuAdapterInfoFreeMembers(info);
+     }
+     WGPULimits supported = WGPU_LIMITS_INIT;
+@@ -1240,24 +1598,21 @@ bool init(Mode m) {
+             g_profile_to = z;
+         }
+     }
+-    if (const char *scale = std::getenv("PS2_SCALE")) g_scale = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::atoi(scale)), 1u, 3u);
+-    g_copy_words = (1u << 20) * g_scale * g_scale;
+-    g_tiles_per_row = (2048 * static_cast<int>(g_scale) + 15) / 16;
+-    g_tile_count.assign(static_cast<std::size_t>(g_tiles_per_row) * g_tiles_per_row, 0);
+-    g_tile_fill.assign(static_cast<std::size_t>(g_tiles_per_row) * g_tiles_per_row, 0);
+-    g_field_words = (1u << 19) * g_scale * g_scale;
+-    g_vram = make_buffer(static_cast<std::uint64_t>(kMemorySize) * g_scale * g_scale, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
++    // The internal resolution: the player's setting; PS2_SCALE overrides it (development).
++    std::uint32_t scale = static_cast<std::uint32_t>(graphics().scale);
++    if (const char *s = std::getenv("PS2_SCALE")) scale = static_cast<std::uint32_t>(std::atoi(s));
++    // High color (see gs.wgsl) keeps a full colour for each 16-bit pixel past the GS memory:
++    // two words per GS word. PS2_EXACT_COLOR=1 shows 16-bit buffers as the PS2 stores them.
++    g_high_color = std::getenv("PS2_EXACT_COLOR") == nullptr;
+     std::vector<std::uint32_t> tables;
+     swizzle_tables(tables);
+     g_tables = make_buffer(tables.size() * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst);
+     wgpuQueueWriteBuffer(g_queue, g_tables, 0, tables.data(), tables.size() * 4);
+     g_clut = make_buffer(static_cast<std::uint64_t>(kClutSlots) * kClutEntries * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
+-    g_scratch = make_buffer((static_cast<std::uint64_t>(g_copy_words) + 2ull * g_field_words) * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc);
+     g_cache = make_buffer(static_cast<std::uint64_t>(kCacheWords) * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst);
+     g_decoded = make_buffer(static_cast<std::uint64_t>(kDecodedWords) * 4, WGPUBufferUsage_Storage);
+     if (const char *decode = std::getenv("PS2_DECODE")) g_decode = std::atoi(decode) != 0;
+     g_cache_copy.assign(kCacheWords, 0);
+-    g_readback = make_buffer(static_cast<std::uint64_t>(g_copy_words) * 4, WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst);
+     if (g_timestamps) {
+         WGPUQuerySetDescriptor qd = WGPU_QUERY_SET_DESCRIPTOR_INIT;
+         qd.type = WGPUQueryType_Timestamp;
+@@ -1287,26 +1642,10 @@ bool init(Mode m) {
+     pld.bindGroupLayoutCount = 1;
+     pld.bindGroupLayouts = &g_layout;
+     g_pipeline_layout = wgpuDeviceCreatePipelineLayout(g_device, &pld);
+-
+-    WGPUShaderSourceWGSL source = WGPU_SHADER_SOURCE_WGSL_INIT;
+-    source.code = view(kGsShader);
+-    WGPUShaderModuleDescriptor md = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
+-    md.nextInChain = &source.chain;
+-    WGPUShaderModule module = wgpuDeviceCreateShaderModule(g_device, &md);
+-    for (int i = 0; i < kPipelines; ++i) {
+-        WGPUComputePipelineDescriptor cd = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
+-        cd.layout = g_pipeline_layout;
+-        cd.compute.module = module;
+-        cd.compute.entryPoint = view(kEntryPoints[i]);
+-        WGPUConstantEntry constant = WGPU_CONSTANT_ENTRY_INIT;
+-        constant.key = view("SCALE");
+-        constant.value = static_cast<double>(g_scale);
+-        cd.compute.constantCount = 1;
+-        cd.compute.constants = &constant;
+-        g_pipelines[i] = wgpuDeviceCreateComputePipeline(g_device, &cd);
+-        if (!g_pipelines[i]) return false;
+-    }
+-    wgpuShaderModuleRelease(module);
++    if (!create_scaled(scale)) return false;
++    add_graphics_listener([](const Graphics &before, const Graphics &now) {
++        if (before.scale != now.scale) g_wanted_scale = static_cast<std::uint32_t>(now.scale);
++    });
+     ensure_capacity();
+     g_mode = m;
+     return true;
+@@ -1679,6 +2018,18 @@ void write_state(const std::vector<std::uint32_t> &vram, std::uint32_t scale, co
+     wait_idle();
+ }
+ 
++// A new internal resolution while playing, at a frame boundary: the GS memory is read at the old
++// scale and written back converted, as a savestate taken at one scale and loaded at another is.
++void change_scale(std::uint32_t scale) {
++    std::vector<std::uint32_t> vram, clut;
++    std::uint32_t from = 1;
++    read_state(vram, from, clut);
++    wait_idle();
++    if (!create_scaled(scale)) std::fprintf(stderr, "[gpu] changing the internal resolution to %ux failed\n", scale);
++    write_state(vram, from, clut);
++    g_have_previous = false;
++}
++
+ void stats() {
+     if (g_mode == Mode::off) return;
+     std::fprintf(stderr, "[gpu] %llu submits, dispatches:", static_cast<unsigned long long>(g_submits));
+@@ -1698,6 +2049,172 @@ void configure_surface() {
      wgpuSurfaceConfigure(g_surface, &config);
  }
  
@@ -1973,10 +3332,80 @@ index 5a13c3e..4f96b93 100644
 +    wgpuQueueWriteBuffer(g_queue, g_overlay_params, 0, params, sizeof params);
 +}
 +
++// The picture effects' pipelines (effects.wgsl), all drawing into the window's format.
++void create_effects() {
++    WGPUShaderSourceWGSL source = WGPU_SHADER_SOURCE_WGSL_INIT;
++    source.code = view(kEffectsShader);
++    WGPUShaderModuleDescriptor md = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
++    md.nextInChain = &source.chain;
++    WGPUShaderModule module = wgpuDeviceCreateShaderModule(g_device, &md);
++    WGPUBindGroupLayoutEntry le[4] = {WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT,
++                                      WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT};
++    for (std::uint32_t i = 0; i < 2; ++i) {
++        le[i].binding = i;
++        le[i].visibility = WGPUShaderStage_Fragment;
++        le[i].texture.sampleType = WGPUTextureSampleType_Float;
++        le[i].texture.viewDimension = WGPUTextureViewDimension_2D;
++    }
++    le[2].binding = 2;
++    le[2].visibility = WGPUShaderStage_Fragment;
++    le[2].sampler.type = WGPUSamplerBindingType_Filtering;
++    le[3].binding = 3;
++    le[3].visibility = WGPUShaderStage_Fragment;
++    le[3].buffer.type = WGPUBufferBindingType_Uniform;
++    WGPUBindGroupLayoutDescriptor ld = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
++    ld.entryCount = 4;
++    ld.entries = le;
++    g_fx_layout = wgpuDeviceCreateBindGroupLayout(g_device, &ld);
++    WGPUPipelineLayoutDescriptor pld = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
++    pld.bindGroupLayoutCount = 1;
++    pld.bindGroupLayouts = &g_fx_layout;
++    g_fx_pipeline_layout = wgpuDeviceCreatePipelineLayout(g_device, &pld);
++    const auto pipeline = [&](const char *entry) {
++        WGPUColorTargetState color = WGPU_COLOR_TARGET_STATE_INIT;
++        color.format = g_surface_format;
++        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
++        fragment.module = module;
++        fragment.entryPoint = view(entry);
++        fragment.targetCount = 1;
++        fragment.targets = &color;
++        WGPURenderPipelineDescriptor rd = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
++        rd.layout = g_fx_pipeline_layout;
++        rd.vertex.module = module;
++        rd.vertex.entryPoint = view("vs");
++        rd.fragment = &fragment;
++        return wgpuDeviceCreateRenderPipeline(g_device, &rd);
++    };
++    g_fx_bright = pipeline("bright");
++    g_fx_blur_h = pipeline("blur_h");
++    g_fx_blur_v = pipeline("blur_v");
++    g_fx_post = pipeline("fs_post");
++    g_fx_easu = pipeline("easu");
++    wgpuShaderModuleRelease(module);
++    WGPUSamplerDescriptor sd = WGPU_SAMPLER_DESCRIPTOR_INIT;
++    sd.magFilter = WGPUFilterMode_Linear;
++    sd.minFilter = WGPUFilterMode_Linear;
++    g_fx_sampler = wgpuDeviceCreateSampler(g_device, &sd);
++    g_fx_params = make_buffer(64, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
++}
++
++// Vsync on: Fifo, the monitor's refresh. Off: the lowest-latency mode the surface offers (Mailbox,
++// else Immediate, else Fifo), as the port always presented before the option existed.
++WGPUPresentMode choose_present_mode(bool vsync) {
++    WGPUPresentMode mode = WGPUPresentMode_Fifo;
++    if (!vsync)
++        for (const WGPUPresentMode wanted : {WGPUPresentMode_Immediate, WGPUPresentMode_Mailbox})
++            for (const WGPUPresentMode m : g_present_modes)
++                if (m == wanted) mode = wanted;
++    const char *const name = mode == WGPUPresentMode_Fifo ? "Fifo" : mode == WGPUPresentMode_Mailbox ? "Mailbox" : "Immediate";
++    std::fprintf(stderr, "[gpu] present mode %s\n", name);
++    return mode;
++}
++
  bool attach_surface(const SurfaceTarget &target) {
      if (g_mode != Mode::primary || !g_device) return false;
      WGPUSurfaceDescriptor sd = WGPU_SURFACE_DESCRIPTOR_INIT;
-@@ -1709,7 +1829,12 @@ bool attach_surface(const SurfaceTarget &target) {
+@@ -1709,7 +2226,12 @@ bool attach_surface(const SurfaceTarget &target) {
      WGPUSurfaceSourceXlibWindow xlib = WGPU_SURFACE_SOURCE_XLIB_WINDOW_INIT;
      WGPUSurfaceSourceWaylandSurface wayland = WGPU_SURFACE_SOURCE_WAYLAND_SURFACE_INIT;
      WGPUSurfaceSourceMetalLayer metal = WGPU_SURFACE_SOURCE_METAL_LAYER_INIT;
@@ -1990,15 +3419,51 @@ index 5a13c3e..4f96b93 100644
          metal.layer = target.surface;
          sd.nextInChain = &metal.chain;
      } else if (target.kind == SurfaceTarget::X11) {
-@@ -1796,6 +1921,7 @@ bool attach_surface(const SurfaceTarget &target) {
-     bd.entries = be;
-     g_blit_group = wgpuDeviceCreateBindGroup(g_device, &bd);
-     wgpuBindGroupLayoutRelease(layout);
+@@ -1738,10 +2260,15 @@ bool attach_surface(const SurfaceTarget &target) {
+             g_surface_format = caps.formats[i];
+             break;
+         }
+-    g_present_mode = WGPUPresentMode_Fifo;
+-    for (const WGPUPresentMode wanted : {WGPUPresentMode_Immediate, WGPUPresentMode_Mailbox})
+-        for (std::size_t i = 0; i < caps.presentModeCount; ++i)
+-            if (caps.presentModes[i] == wanted) g_present_mode = wanted;
++    g_present_modes.assign(caps.presentModes, caps.presentModes + caps.presentModeCount);
++    g_present_mode = choose_present_mode(graphics().vsync);
++    static bool listening = false;
++    if (!listening) {
++        listening = true;
++        add_graphics_listener([](const Graphics &before, const Graphics &now) {
++            if (before.vsync != now.vsync) g_reconfigure = true;
++        });
++    }
+     wgpuSurfaceCapabilitiesFreeMembers(caps);
+     g_surface_width = target.width;
+     g_surface_height = target.height;
+@@ -1783,19 +2310,10 @@ bool attach_surface(const SurfaceTarget &target) {
+     wgpuShaderModuleRelease(module);
+     wgpuPipelineLayoutRelease(pipeline_layout);
+     g_blit_params = make_buffer(32, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
+-    WGPUBindGroupEntry be[2] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
+-    be[0].binding = 0;
+-    be[0].buffer = g_scratch;
+-    be[0].size = WGPU_WHOLE_SIZE;
+-    be[1].binding = 1;
+-    be[1].buffer = g_blit_params;
+-    be[1].size = 32;
+-    WGPUBindGroupDescriptor bd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+-    bd.layout = layout;
+-    bd.entryCount = 2;
+-    bd.entries = be;
+-    g_blit_group = wgpuDeviceCreateBindGroup(g_device, &bd);
+-    wgpuBindGroupLayoutRelease(layout);
++    g_blit_layout = layout;
++    rebuild_blit_group();
++    create_effects();
 +    create_overlay();
      return g_blit != nullptr;
  }
  
-@@ -1804,6 +1930,8 @@ void resize_surface(std::uint32_t width, std::uint32_t height) {
+@@ -1804,12 +2322,78 @@ void resize_surface(std::uint32_t width, std::uint32_t height) {
      g_surface_width = width;
      g_surface_height = height;
      configure_surface();
@@ -2007,15 +3472,124 @@ index 5a13c3e..4f96b93 100644
  }
  
  bool has_surface() { return g_surface != nullptr; }
-@@ -1833,6 +1961,7 @@ bool present(const DisplaySource &src) {
+ 
++// PS2_CAPTURE_PRESENT=<frame>:<file.ppm>, once, when that frame is presented (or shown again while paused).
++void maybe_capture() {
++    static const char *const capture = std::getenv("PS2_CAPTURE_PRESENT");
++    static const std::uint64_t capture_frame = capture ? std::strtoull(capture, nullptr, 10) : 0;
++    static bool captured = false;
++    if (capture && !captured && frame_count() == capture_frame && std::strchr(capture, ':')) {
++        captured = true;
++        capture_present(std::strchr(capture, ':') + 1);
++    }
++}
++
++// The last picture again, with whatever is drawn over it (the F10 menu while the game is paused): no new
++// field is displayed and nothing advances.
++bool present_again() {
++    if (!g_surface || !g_have_previous) return false;
++    WGPUSurfaceTexture st = WGPU_SURFACE_TEXTURE_INIT;
++    wgpuSurfaceGetCurrentTexture(g_surface, &st);
++    if (st.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal && st.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) {
++        if (st.texture) wgpuTextureRelease(st.texture);
++        configure_surface();
++        return true;
++    }
++    upload_overlay();
++    WGPUTextureView target = wgpuTextureCreateView(st.texture, nullptr);
++    submit(target);
++    maybe_capture();
++    // Development check (PS2_CAPTURE_MENU=<file.ppm>): the first picture shown again while paused.
++    static const char *const capture_menu = std::getenv("PS2_CAPTURE_MENU");
++    static bool menu_captured = false;
++    if (capture_menu && !menu_captured) {
++        menu_captured = true;
++        capture_present(capture_menu);
++    }
++#ifndef __EMSCRIPTEN__
++    wgpuSurfacePresent(g_surface);
++#endif
++    wgpuTextureViewRelease(target);
++    wgpuTextureRelease(st.texture);
++    return true;
++}
++
+ bool present(const DisplaySource &src) {
+     if (!g_surface) return false;
++    if (g_reconfigure.exchange(false)) {
++        g_present_mode = choose_present_mode(graphics().vsync);
++        configure_surface();
++    }
++    // Development trigger (PS2_SET_SCALE_AT=<frame>:<n>): the internal resolution changes while playing.
++    static const char *const scale_at = std::getenv("PS2_SET_SCALE_AT");
++    static bool scale_set = false;
++    if (scale_at && std::strchr(scale_at, ':') && !scale_set && frame_count() >= std::strtoull(scale_at, nullptr, 10)) {
++        scale_set = true;
++        Graphics g = graphics();
++        g.scale = std::atoi(std::strchr(scale_at, ':') + 1);
++        set_graphics(g);
++    }
++    if (const std::uint32_t wanted = g_wanted_scale.exchange(0); wanted && wanted != g_scale) change_scale(wanted);
++    // Development trigger (PS2_SET_WIDESCREEN_AT=<frame>:<0|1>): widescreen switches while playing.
++    static const char *const widescreen_at = std::getenv("PS2_SET_WIDESCREEN_AT");
++    static bool widescreen_set = false;
++    if (widescreen_at && std::strchr(widescreen_at, ':') && !widescreen_set && frame_count() >= std::strtoull(widescreen_at, nullptr, 10)) {
++        widescreen_set = true;
++        Graphics g = graphics();
++        g.widescreen = std::atoi(std::strchr(widescreen_at, ':') + 1) != 0;
++        set_graphics(g);
++    }
+     flush_all();
+     const std::uint32_t current = field_base(g_field), previous = field_base(g_field + 1);
+     static const bool weave_off = std::getenv("PS2_NO_DEINTERLACE") != nullptr;
+@@ -1819,8 +2403,17 @@ bool present(const DisplaySource &src) {
+     const float sw = static_cast<float>(g_surface_width), sh = static_cast<float>(g_surface_height);
+     const float aspect = g_options.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+     const float vw = std::min(sw, sh * aspect), vh = vw / aspect;
+-    const std::uint32_t blit[8] = {src.width * g_scale, src.height * g_scale, current, previous, blend ? 1u : 0u, static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options()};
++    const std::uint32_t blit[8] = {src.width * g_scale, src.height * g_scale, current, previous, blend ? 1u : 0u, static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options() | (graphics().fxaa ? 1u : 0u)};
+     wgpuQueueWriteBuffer(g_queue, g_blit_params, 0, blit, sizeof blit);
++    g_internal_width = src.width * g_scale;
++    g_internal_height = src.height * g_scale;
++    if (g_blit_params_lo) {
++        std::uint32_t lo[8];
++        std::memcpy(lo, blit, sizeof lo);
++        lo[5] = g_internal_width;
++        lo[6] = g_internal_height;
++        wgpuQueueWriteBuffer(g_queue, g_blit_params_lo, 0, lo, sizeof lo);
++    }
+     ++g_field;
+     g_have_previous = true;
+     g_last_width = src.width;
+@@ -1833,8 +2426,27 @@ bool present(const DisplaySource &src) {
          configure_surface();
          return true;
      }
 +    upload_overlay();
      WGPUTextureView target = wgpuTextureCreateView(st.texture, nullptr);
++    // Development measurement (PS2_PRESENT_TIME=<frames>): each frame waits for the GPU to finish this
++    // submission (the frame's GS work and the presentation passes), and the average is printed.
++    static const char *const present_time = std::getenv("PS2_PRESENT_TIME");
++    const auto t0 = std::chrono::steady_clock::now();
      submit(target);
++    if (present_time) {
++#ifndef __EMSCRIPTEN__
++        wgpuDevicePoll(g_device, true, nullptr);
++#endif
++        static double total = 0;
++        static std::uint64_t frames = 0;
++        total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++        if (++frames == std::max<std::uint64_t>(1, std::strtoull(present_time, nullptr, 10))) {
++            std::fprintf(stderr, "[gpu] present: %.3f ms per frame over %llu frames\n", total / static_cast<double>(frames), static_cast<unsigned long long>(frames));
++            total = 0;
++            frames = 0;
++        }
++    }
++    maybe_capture();
  #ifndef __EMSCRIPTEN__
-@@ -1843,6 +1972,18 @@ bool present(const DisplaySource &src) {
+     wgpuSurfacePresent(g_surface);
+ #endif
+@@ -1843,6 +2455,18 @@ bool present(const DisplaySource &src) {
      return true;
  }
  
@@ -2034,6 +3608,36 @@ index 5a13c3e..4f96b93 100644
  double busy_ms() {
      if (!g_measured) return 0.0;
      return static_cast<double>(g_measured_ns) / static_cast<double>(g_measured) * static_cast<double>(g_total_passes) / 1e6;
+@@ -1932,3 +2556,29 @@ bool display(const DisplaySource &src, std::vector<std::uint32_t> &rgba, std::ui
+ }
+ 
+ }
++
++namespace ps2 {
++
++std::string take_display_notice() {
++    std::lock_guard lock(gs::gpu::g_notice_mutex);
++    std::string notice;
++    notice.swap(gs::gpu::g_notice);
++    return notice;
++}
++
++}
++
++namespace ps2 {
++
++std::uint32_t gpu_scale() { return gs::gpu::g_scale; }
++
++}
++
++namespace ps2 {
++
++void set_menu_draw(void (*draw)(void *render_pass)) { gs::gpu::g_menu_draw = draw; }
++void *gpu_device() { return gs::gpu::g_device; }
++std::uint32_t gpu_surface_format() { return static_cast<std::uint32_t>(gs::gpu::g_surface_format); }
++bool present_again() { return gs::gpu::present_again(); }
++
++}
 diff --git a/runtime/src/gs/gpu/gpu.hpp b/runtime/src/gs/gpu/gpu.hpp
 index 734e4e4..5ed0b48 100644
 --- a/runtime/src/gs/gpu/gpu.hpp
@@ -3255,10 +4859,24 @@ index 7a0699c..3b48d93 100644
              g_watch_on = true;
              std::fprintf(stderr, "[watch] writes to 0x%08X..0x%08X will print\n", g_watch_base, g_watch_end);
 diff --git a/runtime/src/system.cpp b/runtime/src/system.cpp
-index 86f8ca9..2809a8f 100644
+index 86f8ca9..5af9500 100644
 --- a/runtime/src/system.cpp
 +++ b/runtime/src/system.cpp
-@@ -37,6 +37,10 @@
+@@ -15,6 +15,7 @@
+ #include "ps2/generated.hpp"
+ #include "ps2/memory.hpp"
+ #include "ps2/state.hpp"
++#include "ps2/graphics.hpp"
+ #include "ps2/state_request.hpp"
+ #include "ps2/system.hpp"
+ #include "ps2/video.hpp"
+@@ -32,11 +33,16 @@
+ #include <fstream>
+ #include <cstdlib>
+ #include <iterator>
++#include <condition_variable>
+ #include <mutex>
+ #include <stdexcept>
  
  namespace ps2 {
  
@@ -3269,7 +4887,42 @@ index 86f8ca9..2809a8f 100644
  Cpu g_cpu;
  Options g_options;
  
-@@ -268,7 +272,7 @@ std::uint32_t video_options() { return g_video_options.load(std::memory_order_re
+@@ -162,12 +168,26 @@ void apply_patches(bool boot) {
+     }
+ }
+ 
++// The F10 menu's pause (request_pause): the emulation waits in vblank() while it's set.
++namespace {
++std::mutex g_pause_mutex;
++std::condition_variable g_pause_cv;
++std::atomic<bool> g_pause{false}, g_paused_now{false};
++}
++
+ void vblank() {
+     ++g_frames;
+     time_frames();
+     apply_presses();
+     apply_patches(false);
+     if (g_options.on_vblank) g_options.on_vblank();
++    // The F10 menu's pause: this frame has been shown; wait here, at the frame boundary, until it closes.
++    if (g_pause.load()) {
++        std::unique_lock lock(g_pause_mutex);
++        g_paused_now = true;
++        g_pause_cv.wait(lock, [] { return !g_pause.load() || g_halted; });
++        g_paused_now = false;
++    }
+     iop::sio2::flush_cards();
+     if (g_options.trace_iop_modules && g_frames % 25 == 0) std::fprintf(stderr, "[frame] %llu prims %llu\n", static_cast<unsigned long long>(g_frames), static_cast<unsigned long long>(gs::primitives_drawn()));
+     if (!g_options.frames_dir.empty() && g_options.frame_every && g_frames % g_options.frame_every == 0) dump_frame();
+@@ -248,6 +268,7 @@ void halt(const std::string &reason) {
+     if (!g_halted) std::fprintf(stderr, "[ee] halted: %s\n", reason.c_str());
+     g_halted = true;
+     g_halt_reason = reason;
++    g_pause_cv.notify_all();  // a paused emulation wakes up to stop
+ }
+ 
+ bool halted() { return g_halted; }
+@@ -268,7 +289,7 @@ std::uint32_t video_options() { return g_video_options.load(std::memory_order_re
  namespace {
  
  constexpr char kStateMagic[8] = {'P', 'S', '2', 'S', 'T', 'A', 'T', 'E'};
@@ -3278,7 +4931,7 @@ index 86f8ca9..2809a8f 100644
  
  std::function<void()> event_action(int id, std::uint64_t at) {
      if (id == hw::kEventVblank) return vblank;
-@@ -398,8 +402,25 @@ bool load_elf(const std::string &path, std::uint32_t &entry) {
+@@ -398,8 +419,25 @@ bool load_elf(const std::string &path, std::uint32_t &entry) {
  void sync_iop() {
      const std::uint64_t t = now();
      if (t > g_iop_synced) {
@@ -3304,11 +4957,38 @@ index 86f8ca9..2809a8f 100644
      }
      sif::pump();
  }
-@@ -410,10 +431,17 @@ void request_iop_sync() {
+@@ -408,12 +446,44 @@ void request_iop_sync() {
+     if (g_cpu.budget > 64) set_budget(g_cpu, 64);
+ }
  
++// Widescreen changes while playing: the presentation's aspect and the 2D narrowing read
++// g_options.widescreen every frame, and the widescreen code patches read their switch each time they
++// run. The game reads the PS2's own TV-aspect setting (OSD config) only at boot, so that one keeps the
++// value it had then.
++bool widescreen_live() { return true; }
++
++void request_pause(bool on) {
++    {
++        std::lock_guard lock(g_pause_mutex);
++        g_pause = on;
++    }
++    g_pause_cv.notify_all();
++}
++
++bool paused() { return g_paused_now.load(); }
++
  void boot(std::uint32_t entry, const std::vector<std::string> &args) {
      init_watch();
 +    g_code_patches = g_options.widescreen ? 1u : 0u;
++    static bool listening = false;
++    if (!listening) {
++        listening = true;
++        add_graphics_listener([](const Graphics &before, const Graphics &now) {
++            if (before.widescreen == now.widescreen) return;
++            g_options.widescreen = now.widescreen;
++            g_code_patches = (g_code_patches & ~1u) | (now.widescreen ? 1u : 0u);
++        });
++    }
      hw::reset();
      kernel::reset();
 -    if (!g_options.disc_path.empty() && !disc::open(g_options.disc_path))
@@ -3324,7 +5004,7 @@ index 86f8ca9..2809a8f 100644
      iop::set_trace(g_options.trace_iop_modules, g_options.trace_iop_hle);
      iop::reset();
      std::vector<std::string> guest_args = args;
-@@ -637,6 +665,7 @@ bool parse_axis(const std::string &spec, AxisPress &press) {
+@@ -637,6 +707,7 @@ bool parse_axis(const std::string &spec, AxisPress &press) {
  }
  
  double gpu_busy_ms() { return gs::gpu_busy_ms(); }
@@ -3519,3 +5199,108 @@ index e83b8c9..d9f49f1 100644
      Unit u = unit_of(n);
      Vu0Regs &r = *u.regs;
      vuops::FlagPipe pipe;
+diff --git a/tests/graphics_settings_test.cpp b/tests/graphics_settings_test.cpp
+new file mode 100644
+index 0000000..e085f44
+--- /dev/null
++++ b/tests/graphics_settings_test.cpp
+@@ -0,0 +1,99 @@
++// Tests the graphics settings file (settings.ini) shared by the launcher and the game: run the built
++// graphics_settings_test; it exits 0 when every check passes and prints the first failure otherwise.
++#include "ps2/graphics.hpp"
++
++#include <cmath>
++#include <cstdio>
++#include <filesystem>
++#include <fstream>
++#include <sstream>
++#include <string>
++
++namespace {
++
++int g_failures = 0;
++
++void check(bool ok, const char *what) {
++    if (ok) return;
++    std::fprintf(stderr, "FAIL: %s\n", what);
++    ++g_failures;
++}
++
++std::string temp_file(const char *name, const std::string &text) {
++    const std::string path = (std::filesystem::temp_directory_path() / name).string();
++    std::ofstream(path, std::ios::binary) << text;
++    return path;
++}
++
++std::string read(const std::string &path) {
++    std::ifstream in(path, std::ios::binary);
++    std::stringstream s;
++    s << in.rdbuf();
++    return s.str();
++}
++
++void round_trip() {
++    ps2::Graphics g;
++    g.api = ps2::Api::vulkan;
++    g.scale = 5;
++    g.vsync = false;
++    g.widescreen = g.fullscreen = g.fxaa = g.fsr = g.sharpen = g.bloom = g.deband = g.crt = g.crt_curvature = g.vignette = g.grain = true;
++    g.sharpen_strength = 0.25f;
++    g.bloom_strength = 0.75f;
++    g.crt_scanlines = 0.8f;
++    g.vignette_strength = 0.1f;
++    g.grain_strength = 0.9f;
++    g.brightness = -0.2f;
++    g.contrast = 1.3f;
++    g.saturation = 0.4f;
++    g.gamma = 1.8f;
++    const std::string path = temp_file("graphics_round_trip.ini", "");
++    ps2::save_graphics(path, g);
++    const ps2::Graphics l = ps2::load_graphics(path);
++    const auto near = [](float a, float b) { return std::fabs(a - b) < 1e-4f; };
++    check(l.api == ps2::Api::vulkan && l.scale == 5 && !l.vsync, "round_trip: api, scale, vsync");
++    check(l.widescreen && l.fullscreen && l.fxaa && l.fsr && l.sharpen && l.bloom && l.deband && l.crt && l.crt_curvature && l.vignette && l.grain,
++          "round_trip: switches");
++    check(near(l.sharpen_strength, 0.25f) && near(l.bloom_strength, 0.75f) && near(l.crt_scanlines, 0.8f) && near(l.vignette_strength, 0.1f) &&
++              near(l.grain_strength, 0.9f),
++          "round_trip: strengths");
++    check(near(l.brightness, -0.2f) && near(l.contrast, 1.3f) && near(l.saturation, 0.4f) && near(l.gamma, 1.8f), "round_trip: colour");
++}
++
++void old_file() {
++    const std::string path = temp_file("graphics_old.ini", "iso=x\nfullscreen=1\nwidescreen=0\nscale=3\n");
++    const ps2::Graphics l = ps2::load_graphics(path);
++    const ps2::Graphics d;
++    check(l.fullscreen && !l.widescreen && l.scale == 3, "old_file: existing keys");
++    check(l.api == d.api && l.vsync == d.vsync && l.fxaa == d.fxaa && l.bloom == d.bloom && l.gamma == d.gamma, "old_file: new keys at defaults");
++    ps2::save_graphics(path, l);
++    check(read(path).find("iso=x\n") != std::string::npos, "old_file: save keeps iso");
++    check(read(path).find("bloom_strength=") != std::string::npos, "old_file: save writes every key");
++}
++
++void clamps() {
++    check(ps2::load_graphics(temp_file("graphics_c1.ini", "scale=9\n")).scale == 6, "clamps: scale 9 -> 6");
++    check(ps2::load_graphics(temp_file("graphics_c2.ini", "scale=0\n")).scale == 1, "clamps: scale 0 -> 1");
++    check(ps2::load_graphics(temp_file("graphics_c3.ini", "bloom_strength=7\n")).bloom_strength == 1.0f, "clamps: bloom_strength 7 -> 1");
++    check(ps2::load_graphics(temp_file("graphics_c4.ini", "gamma=9\n")).gamma == 2.0f, "clamps: gamma 9 -> 2");
++    check(ps2::load_graphics(temp_file("graphics_c5.ini", "api=metal\n")).api == ps2::Api::vulkan, "clamps: api metal -> vulkan (the default)");
++    check(ps2::load_graphics(temp_file("graphics_c6.ini", "api=d3d12\n")).api == ps2::Api::d3d12, "clamps: api d3d12 kept");
++    check(ps2::Graphics{}.api == ps2::Api::vulkan, "defaults: Vulkan");
++}
++
++void labels() {
++    check(std::string(ps2::scale_label(1)) == "1x (~480p)", "labels: 1x");
++    check(std::string(ps2::scale_label(5)) == "5x (~2160p, 4K)", "labels: 5x");
++    check(std::string(ps2::scale_label(6)) == "6x (~2880p, 5K)", "labels: 6x");
++}
++
++}
++
++int main() {
++    round_trip();
++    old_file();
++    clamps();
++    labels();
++    if (!g_failures) std::printf("graphics settings: all checks passed\n");
++    return g_failures ? 1 : 0;
++}

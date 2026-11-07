@@ -9,6 +9,8 @@
 #include <imgui_impl_sdl2.h>
 #include <imgui_impl_sdlrenderer2.h>
 
+#include "graphics_ui.hpp"
+
 #include <windows.h>
 #include <commdlg.h>
 
@@ -50,9 +52,10 @@ bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
     const auto q = [](const fs::path &p) { return L"\"" + p.wstring() + L"\""; };
     std::wstring cmd = q(exe) + L" " + q(paths.game / config.get("boot")) + L" --memcard " + q(paths.saves / "memcard1.ps2") +
                        L" --window";
-    if (s.fullscreen) cmd += L" --fullscreen";
-    if (s.widescreen) cmd += L" --widescreen";
-    if (s.widescreen && !config.get("widescreen_2d_vu1").empty())
+    if (s.graphics.fullscreen) cmd += L" --fullscreen";
+    if (s.graphics.widescreen) cmd += L" --widescreen";
+    // Passed in 4:3 too, so switching to 16:9 in the F10 menu can narrow the 2D layer (unused in 4:3).
+    if (!config.get("widescreen_2d_vu1").empty())
         cmd += L" --widescreen-2d-vu1 " + fs::path(config.get("widescreen_2d_vu1")).wstring();
     // Quick save / load (F5 / F6): a developer build inside the repository uses its .savestates
     // folder, so states outlive clean builds; any other copy keeps them beside the executable.
@@ -63,7 +66,8 @@ bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
             break;
         }
     cmd += L" --states " + q(states);
-    SetEnvironmentVariableW(L"PS2_SCALE", std::to_wstring(s.scale).c_str());
+    cmd += L" --settings " + q(paths.root / "settings.ini");
+    SetEnvironmentVariableW(L"PS2_SCALE", std::to_wstring(s.graphics.scale).c_str());
     // The game writes its log beside the others; a launched game has no console.
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE log = CreateFileW((paths.logs / "game.log").wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -216,12 +220,10 @@ int run() {
                 }
                 ImGui::EndDisabled();
             } else {
-                ImGui::Checkbox("Fullscreen", &settings.fullscreen);
-                ImGui::Checkbox("Widescreen (16:9)", &settings.widescreen);
-                const char *scales[] = {"Native (1x)", "2x", "3x"};
-                int scale = settings.scale - 1;
-                ImGui::SetNextItemWidth(200);
-                if (ImGui::Combo("Internal resolution", &scale, scales, 3)) settings.scale = scale + 1;
+                // The same options as the in-game F10 menu (graphics_ui.cpp).
+                ImGui::PushItemWidth(200);
+                ps2ui::graphics_options(settings.graphics, false);
+                ImGui::PopItemWidth();
                 ImGui::Spacing();
                 ImGui::BeginDisabled(!data_ok);
                 if (ImGui::Button("Play", ImVec2(220, 50))) {

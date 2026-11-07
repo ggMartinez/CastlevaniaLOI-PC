@@ -28,6 +28,10 @@ New-Item -ItemType Directory -Force $Out, $compiler, "$compiler\bin", "$compiler
 
 # Runner + launcher
 foreach ($f in "CastlevaniaLoI.exe", "SDL2.dll", "wgpu_native.dll") { Copy-Item (Join-Path $Build $f) $Out }
+# DXC: compiles the renderer's shaders on Direct3D 12 (Windows' own FXC can't compile the GS shader).
+# Only dxcompiler.dll (LLVM and MIT licences): this DXC validates and signs shaders itself, so the
+# closed-source dxil.dll, under Microsoft's separate terms, isn't needed or shipped.
+Copy-Item (Join-Path $tools "dxc\bin\x64\dxcompiler.dll") $Out
 if ($Pdb) { Copy-Item (Join-Path $Build "CastlevaniaLoI.pdb") $Out }
 
 # Translators and what game.dll is built against
@@ -55,6 +59,8 @@ Copy-Item (Join-Path $recomp "LICENSE") "$Out\licenses\ps2-web-recomp.txt"
 Copy-Item "$llvm\LICENSE.TXT" "$Out\licenses\llvm-mingw.txt"
 Copy-Item "$tools\SDL2\LICENSE.txt" "$Out\licenses\SDL2.txt"
 Copy-Item "$tools\imgui\LICENSE.txt" "$Out\licenses\dear-imgui.txt"
+Copy-Item "$tools\dxc\LICENSE-LLVM.txt" "$Out\licenses\dxc-llvm.txt"
+Copy-Item "$tools\dxc\LICENCE-MIT.txt" "$Out\licenses\dxc-mit.txt"
 $wgpuLicense = Get-ChildItem "$tools\wgpu-native" -Recurse -Filter "LICENSE*" | Select-Object -First 1
 if ($wgpuLicense) { Copy-Item $wgpuLicense.FullName "$Out\licenses\wgpu-native.txt" }
 

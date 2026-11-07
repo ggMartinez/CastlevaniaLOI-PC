@@ -30,6 +30,9 @@ $archives = @(
     @{ Name = "imgui"; What = "Dear ImGui v1.93.0 (the launcher's interface)"; Inner = "imgui-1.93.0"
        Url = "https://github.com/ocornut/imgui/archive/refs/tags/v1.93.0.zip"
        Sha256 = "e21907fd8dd5ea59aa00538632a02ad0a3ededb4ddc533b94702331fbcd6c470" }
+    @{ Name = "dxc"; What = "DirectX Shader Compiler v1.9.2609 (compiles the renderer's shaders on Direct3D 12)"; Inner = ""
+       Url = "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/dxc_2026_09_29.zip"
+       Sha256 = "ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1" }
 )
 
 # snuri00/ps2-web-recomp (MIT): the PS2 recompiler (eerecomp, vurecomp) and the runtime.

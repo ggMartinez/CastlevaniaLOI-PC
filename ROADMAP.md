@@ -124,4 +124,20 @@ resumes in the middle of a block.
 - **Today:** the GS is emulated on the GPU with compute shaders, fed by emulated VIF and GIF paths.
 - **Native goal:** capture what the game draws and issue native Direct3D or Vulkan draws, matching its GS tricks
   (shadow volumes, render-to-texture, palette textures).
-- **Notes:** by far the hardest part.
+- **Done on today's renderer: graphics options**, in the launcher and the in-game F10 menu. The game pauses
+  while the menu is open.
+  - **Graphics API:** Vulkan (the default, the proven path) or Direct3D 12 (shaders compiled with DXC;
+    newer and less played).
+  - **Internal resolution:** 1x to 6x (~480p to ~2880p; 5x reaches 4K).
+  - **Display:** vsync, 4:3 or 16:9 while playing, fullscreen.
+  - **Effects:** FXAA, an FSR-style upscaling filter, sharpening, bloom, colour controls, debanding, CRT,
+    vignette, film grain.
+  - **Defaults:** with every effect off, the picture is byte-identical to before.
+  - **Costs** on an RX 6800 XT:
+    - gameplay: 10.1 ms per frame at 1x, 11.6 ms at 6x;
+    - effects: about 0.05–0.12 ms each set.
+  - Design: [docs/superpowers/specs/2026-11-07-graphics-options-design.md](docs/superpowers/specs/2026-11-07-graphics-options-design.md).
+- **Notes:**
+  - Native draws are by far the hardest part.
+  - Before this work the port had always run on Vulkan: Direct3D 12 crashed in Windows' FXC shader
+    compiler.
