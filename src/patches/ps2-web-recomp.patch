@@ -154,7 +154,7 @@ index 0000000..10ed3b0
 +    register_generated_vu();
 +}
 diff --git a/host/main.cpp b/host/main.cpp
-index 2fdf426..292cb26 100644
+index 2fdf426..50c763b 100644
 --- a/host/main.cpp
 +++ b/host/main.cpp
 @@ -13,11 +13,45 @@
@@ -227,11 +227,20 @@ index 2fdf426..292cb26 100644
      std::uint64_t run_frames = 0;
      for (int i = 2; i < argc; ++i) {
          const std::string a = argv[i];
-@@ -81,14 +128,22 @@ int main(int argc, char **argv) {
+@@ -81,14 +128,31 @@ int main(int argc, char **argv) {
              ps2::g_options.save_state_path = spec.substr(colon + 1);
          }
          else if (a == "--load-state" && i + 1 < argc) load_path = argv[++i];
 +        else if (a == "--states" && i + 1 < argc) ps2::g_options.state_dir = argv[++i];
++        else if (a == "--widescreen-2d-vu1" && i + 1 < argc) {
++            // hex words, colon-separated: the 2D microcode's first instructions
++            for (const char *at = argv[++i]; *at;) {
++                char *end = nullptr;
++                ps2::g_options.widescreen_2d_vu1.push_back(static_cast<std::uint32_t>(std::strtoul(at, &end, 16)));
++                if (end == at) return usage();
++                at = *end == ':' ? end + 1 : end;
++            }
++        }
 +#ifdef PS2_GAME_DLL
 +        else if (a == "--game" && i + 1 < argc) game_path = argv[++i];
 +#endif
@@ -816,19 +825,23 @@ index 6a919d2..efd4b09 100644
  void watch_span(std::uint32_t a, std::uint32_t n, const char *via);
  void init_watch();
 diff --git a/runtime/include/ps2/system.hpp b/runtime/include/ps2/system.hpp
-index f447223..3d9402f 100644
+index f447223..47d9b36 100644
 --- a/runtime/include/ps2/system.hpp
 +++ b/runtime/include/ps2/system.hpp
-@@ -59,6 +59,8 @@ struct Options {
+@@ -59,6 +59,12 @@ struct Options {
      std::function<void()> on_memcard_saved;
      std::string save_state_path;
      std::uint64_t save_state_frame = 0;
 +    // Where the window's quick save (F5) and quick load (F6) keep their state; empty turns them off.
 +    std::string state_dir;
++    // The first words of the VU1 microcode that draws a game's 2D layer (HUD, menus, text). With
++    // widescreen on, what it draws keeps its 4:3 shape, centred, while the 3D view (widened by a
++    // code patch) fills 16:9. Empty leaves every draw as the game makes it.
++    std::vector<std::uint32_t> widescreen_2d_vu1;
  };
  
  extern Options g_options;
-@@ -101,7 +103,7 @@ std::uint64_t frame_count();
+@@ -101,7 +107,7 @@ std::uint64_t frame_count();
  bool display_frame(std::vector<std::uint32_t> &rgba, std::uint32_t &width, std::uint32_t &height);
  
  struct WindowTarget {
@@ -837,7 +850,7 @@ index f447223..3d9402f 100644
      void *display = nullptr;
      std::uint64_t window = 0;
      void *surface = nullptr;
-@@ -113,6 +115,9 @@ struct WindowTarget {
+@@ -113,6 +119,9 @@ struct WindowTarget {
  bool attach_window(const WindowTarget &target);
  void resize_window(std::uint32_t width, std::uint32_t height);
  bool present_frame();
@@ -929,7 +942,7 @@ index 34fe4f2..cf942cb 100644
          for (std::uint32_t i = 0; i < qwc; ++i) std::memcpy(buffer.data() + i * 16, source(address + i * 16), 16);
          data = buffer.data();
 diff --git a/runtime/src/gs/gif.cpp b/runtime/src/gs/gif.cpp
-index b5e54c8..7ff9902 100644
+index b5e54c8..e92ba12 100644
 --- a/runtime/src/gs/gif.cpp
 +++ b/runtime/src/gs/gif.cpp
 @@ -7,6 +7,7 @@
@@ -940,6 +953,43 @@ index b5e54c8..7ff9902 100644
  #include <cstring>
  #include <vector>
  
+@@ -168,7 +169,7 @@ void out(int path, const std::uint8_t *data, std::uint32_t qwc) {
+         render(path, data, qwc);
+         return;
+     }
+-    if (gs::queue::role() != gs::queue::Role::Vu) scan(g_scan[path], data, qwc);
++    if (gs::queue::role() != gs::queue::Role::Vu) scan(g_scan[path & 3], data, qwc);
+     gs::queue::post(gs::queue::kGif, static_cast<std::uint32_t>(path), qwc, data, qwc * 16);
+ }
+ 
+@@ -240,8 +241,12 @@ void render_reset() {
+ }
+ 
+ void render(int path, const std::uint8_t *data, std::uint32_t qwc) {
++    const bool narrow = (path & kWidescreen2d) != 0;
++    path &= 3;
+     GsSink sink{path};
++    if (narrow) gs::set_widescreen_2d(true);
+     walk(g_paths[path], data, qwc, sink);
++    if (narrow) gs::set_widescreen_2d(false);
+ }
+ 
+ void transfer(int path, const std::uint8_t *data, std::uint32_t qwc) {
+diff --git a/runtime/src/gs/gif.hpp b/runtime/src/gs/gif.hpp
+index 6ef5e1a..3395cbb 100644
+--- a/runtime/src/gs/gif.hpp
++++ b/runtime/src/gs/gif.hpp
+@@ -12,6 +12,10 @@ void state(ps2::state::Stream &s);
+ 
+ void reset();
+ void stats();
++// Or'ed into a path: GIF data the game's 2D microcode kicked, drawn 4:3 in widescreen
++// (see Options::widescreen_2d_vu1).
++inline constexpr int kWidescreen2d = 0x100;
++
+ void transfer(int path, const std::uint8_t *data, std::uint32_t qwc);
+ void render(int path, const std::uint8_t *data, std::uint32_t qwc);
+ void render_reset();
 diff --git a/runtime/src/gs/gpu/gpu.cpp b/runtime/src/gs/gpu/gpu.cpp
 index 5a13c3e..4f96b93 100644
 --- a/runtime/src/gs/gpu/gpu.cpp
@@ -1282,10 +1332,77 @@ index ac7b52e..8c910f3 100644
          case 0x01u {
              let l32 = Loc(l.word, 0u, 0xFFFFFFFFu);
 diff --git a/runtime/src/gs/gs.cpp b/runtime/src/gs/gs.cpp
-index a9c2be0..228e077 100644
+index a9c2be0..66c96ce 100644
 --- a/runtime/src/gs/gs.cpp
 +++ b/runtime/src/gs/gs.cpp
-@@ -1058,6 +1058,14 @@ void resize_window(std::uint32_t width, std::uint32_t height) {
+@@ -660,15 +660,64 @@ void vblank() {
+ 
+ }
+ 
++bool g_widescreen_2d = false;
++// Block addresses the GS has drawn into lately: a texture read from one is a picture of the screen.
++std::uint32_t g_targets[8] = {};
++std::uint32_t g_next_target = 0;
++
++void note_target(const Context &x) {
++    const std::uint32_t block = (static_cast<std::uint32_t>(x.frame) & 0x1FFu) * 32u;
++    for (const std::uint32_t t : g_targets)
++        if (t == block) return;
++    g_targets[g_next_target++ % 8] = block;
++}
++
++bool is_target(std::uint32_t block) {
++    for (const std::uint32_t t : g_targets)
++        if (t == block) return true;
++    return false;
++}
++
++// A primitive of the game's 2D layer in widescreen: its x positions pulled towards the centre of
++// the scissor area by 3/4, so it keeps its 4:3 shape once the picture is shown at 16:9, like a 4:3
++// picture would. One that spans (nearly) the whole width stays as it is when it is a fill (a fade,
++// a clear) or a copy of something the GS drew (the screen, a shadow pass): those must still cover
++// the edges. A whole-screen image of the game's own (a logo, a background) is narrowed like the rest.
++const Vertex *narrow_2d(const State &s, int needed, Vertex (&out)[3]) {
++    const std::uint64_t prim = (s.prmodecont & 1u) ? s.prim : ((s.prim & 7u) | (s.prmode & ~7ull));
++    const Context &x = s.ctx[(prim >> 9) & 1u];
++    const bool textured = (prim >> 4) & 1u;
++    const auto sx0 = static_cast<std::int32_t>(x.scissor & 0x7FFu), sx1 = static_cast<std::int32_t>((x.scissor >> 16) & 0x7FFu);
++    const std::int32_t width = (sx1 - sx0 + 1) * 16;
++    const std::int32_t centre = static_cast<std::int32_t>(x.xyoffset & 0xFFFFu) + (sx0 + sx1 + 1) * 8;
++    std::int32_t lo = 0x7FFFFFFF, hi = -0x7FFFFFFF;
++    for (int i = 0; i < needed; ++i) {
++        lo = std::min(lo, static_cast<std::int32_t>(s.queue[i].x));
++        hi = std::max(hi, static_cast<std::int32_t>(s.queue[i].x));
++    }
++    if (width <= 0) return s.queue;
++    if ((hi - lo) * 10 >= width * 9 && (!textured || is_target(static_cast<std::uint32_t>(x.tex0) & 0x3FFFu))) return s.queue;
++    for (int i = 0; i < needed; ++i) {
++        out[i] = s.queue[i];
++        out[i].x = static_cast<std::uint32_t>(std::clamp(centre + (static_cast<std::int32_t>(s.queue[i].x) - centre) * 3 / 4, 0, 0xFFFF));
++    }
++    return out;
++}
++
++void set_widescreen_2d(bool on) { g_widescreen_2d = on && g_options.widescreen; }
++
+ void kick(bool draw) {
+     State &s = g_state;
+     const std::uint32_t prim = static_cast<std::uint32_t>(s.prim) & 7u;
+     const int needed = prim == 0 ? 1 : (prim == 1 || prim == 2 || prim == 6) ? 2 : prim == 7 ? 1 : 3;
+     if (s.count < needed) return;
+     if (draw) {
+-        if (cpu_raster()) raster::draw(s, s.queue, needed);
++        note_target(s.ctx[((((s.prmodecont & 1u) ? s.prim : s.prmode) >> 9) & 1u)]);
++        Vertex narrowed[3];
++        const Vertex *v = g_widescreen_2d ? narrow_2d(s, needed, narrowed) : s.queue;
++        if (cpu_raster()) raster::draw(s, v, needed);
+ #ifdef PS2_GPU
+-        if (gpu_on()) gpu::draw(s, s.queue, needed);
++        if (gpu_on()) gpu::draw(s, v, needed);
+ #endif
+         capture::prim(s, needed);
+         ++g_primitives;
+@@ -1058,6 +1107,14 @@ void resize_window(std::uint32_t width, std::uint32_t height) {
  #endif
  }
  
@@ -1301,10 +1418,19 @@ index a9c2be0..228e077 100644
  #ifdef PS2_GPU
      return gpu::busy_ms();
 diff --git a/runtime/src/gs/gs.hpp b/runtime/src/gs/gs.hpp
-index 76e248d..b89b64c 100644
+index 76e248d..c38f983 100644
 --- a/runtime/src/gs/gs.hpp
 +++ b/runtime/src/gs/gs.hpp
-@@ -87,6 +87,7 @@ void flush_and_wait();
+@@ -62,6 +62,8 @@ void render_reset();
+ std::uint64_t read_privileged(std::uint32_t address);
+ void write_privileged(std::uint32_t address, std::uint64_t value);
+ void vblank(bool start);
++// While on, primitives are drawn squeezed to 4:3 around the screen centre (gif::kWidescreen2d).
++void set_widescreen_2d(bool on);
+ bool interlaced_odd_field();
+ 
+ std::uint32_t address32(std::uint32_t bp, std::uint32_t bw, std::uint32_t x, std::uint32_t y);
+@@ -87,6 +89,7 @@ void flush_and_wait();
  void post_present();
  Rendered render_pending(const std::function<void(const DisplayRegs &)> &on_present, double budget_ms);
  double gpu_busy_ms();
@@ -1417,3 +1543,20 @@ index 86f8ca9..d3f3332 100644
  
  #ifdef __EMSCRIPTEN__
  EM_ASYNC_JS(void, ps2_browser_yield, (), {
+diff --git a/runtime/src/vu_micro.cpp b/runtime/src/vu_micro.cpp
+index e83b8c9..e357c61 100644
+--- a/runtime/src/vu_micro.cpp
++++ b/runtime/src/vu_micro.cpp
+@@ -482,7 +482,11 @@ void xgkick(Unit &u, std::uint32_t address) {
+             std::memcpy(buffer + count * 16, qword(u, q), 16);
+         done = eop;
+     }
+-    gif::transfer(1, buffer, count);
++    // The game's 2D microcode (Options::widescreen_2d_vu1) draws for 4:3 even in widescreen.
++    const auto &narrow = g_options.widescreen_2d_vu1;
++    const bool narrow_2d = g_options.widescreen && u.n == 1 && !narrow.empty() && narrow.size() * 4 <= 16384u &&
++                           std::memcmp(u.code, narrow.data(), narrow.size() * 4) == 0;
++    gif::transfer(narrow_2d ? (1 | gif::kWidescreen2d) : 1, buffer, count);
+ }
+ 
+ // A VU branch that reads an integer register the instruction right before it

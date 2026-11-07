@@ -52,6 +52,8 @@ bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
                        L" --window";
     if (s.fullscreen) cmd += L" --fullscreen";
     if (s.widescreen) cmd += L" --widescreen";
+    if (s.widescreen && !config.get("widescreen_2d_vu1").empty())
+        cmd += L" --widescreen-2d-vu1 " + fs::path(config.get("widescreen_2d_vu1")).wstring();
     // Quick save / load (F5 / F6): a developer build inside the repository uses its .savestates
     // folder, so states outlive clean builds; any other copy keeps them beside the executable.
     fs::path states = paths.root / "savestates";
