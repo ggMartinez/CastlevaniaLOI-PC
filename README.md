@@ -27,7 +27,8 @@ The launcher identifies the disc by its boot executable (`SLUS_207.33`, SHA-1
 
 - Windows 10 or 11, 64-bit
 - A graphics card with Direct3D 12 support
-- About 500 MB of disk space besides the disc image
+- About 3.5 GB of disk space: the build copies the game's files off the disc image, which you can
+  delete afterwards
 - Nothing else to install: the compiler the launcher uses is in the download
 
 ### Getting started
@@ -35,8 +36,9 @@ The launcher identifies the disc by its boot executable (`SLUS_207.33`, SHA-1
 1. Download `CastlevaniaLoI-<version>-win64.zip` from the Releases page and extract it anywhere.
 2. Run `CastlevaniaLoI.exe`. The launcher opens.
 3. **Choose disc image…** and pick your `.iso`. It shows *Disc verified* when the disc is supported.
-4. **Build the game.** This happens once and takes about a minute: the launcher translates the
-   game's code to C++ and compiles it into `game.dll`, with progress and a log.
+4. **Build the game.** This happens once and takes about a minute: the launcher copies the game's
+   files off the disc image, translates the game's code to C++ and compiles it into `game.dll`, with
+   progress and a log.
 5. Set **Fullscreen**, **Widescreen** and the internal resolution (1x–3x) if you like, then **Play**.
 
 **Widescreen** is real 16:9: the 3D view gets wider instead of stretched (PCSX2's widescreen
@@ -45,8 +47,10 @@ patch by arapapa, with nemesis2000's fix that keeps movies 4:3). The menus, text
 but moves to the top-left corner; fades and full-screen effects still cover the whole picture.
 Switching it needs no new build.
 
-The launcher remembers your disc and goes straight to *Play* after that. After an update of the
-port, it asks you to build the game again: the new version needs a `game.dll` made for it.
+After the build the game plays from those copied files: the disc image is no longer needed, to play
+or to build again, and you can move or delete it. After an update of the port, the launcher asks you
+to build the game again (the new version needs a `game.dll` made for it); that rebuild uses the
+copied files too.
 
 ### Controls
 
@@ -84,7 +88,8 @@ Everything stays in the extracted folder:
 | `savestates\quick.state` | The F5 quick save |
 | `logs\build.log`, `logs\game.log` | The game build's log and the game's own log |
 | `settings.ini` | The launcher's settings |
-| `game\`, `game.dll` | What the launcher built from your disc. Delete them to build again |
+| `game\data\` | The game's files, copied off your disc image by the build (about 2.9 GB): the game reads its data from these |
+| `game\`, `game.dll` | What the launcher built from your disc. Delete them to build again (from the disc image, as `game\data\` goes too) |
 
 ### Antivirus warnings
 

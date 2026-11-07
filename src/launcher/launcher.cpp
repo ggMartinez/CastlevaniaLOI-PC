@@ -48,7 +48,7 @@ bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
     fs::create_directories(paths.saves, ec);
     fs::create_directories(paths.logs, ec);
     const auto q = [](const fs::path &p) { return L"\"" + p.wstring() + L"\""; };
-    std::wstring cmd = q(exe) + L" " + q(paths.game / config.get("boot")) + L" --disc " + q(fs::path(s.iso)) + L" --memcard " + q(paths.saves / "memcard1.ps2") +
+    std::wstring cmd = q(exe) + L" " + q(paths.game / config.get("boot")) + L" --memcard " + q(paths.saves / "memcard1.ps2") +
                        L" --window";
     if (s.fullscreen) cmd += L" --fullscreen";
     if (s.widescreen) cmd += L" --widescreen";
@@ -130,6 +130,9 @@ int run() {
     std::string disc_message;
     bool disc_ok = false;
     bool built = have_config && is_built(paths, config);
+    // The game plays from the files the build copied off the disc; the image is only for building.
+    std::string data_message;
+    bool data_ok = have_config && check_data(paths, config, data_message);
     if (have_config && !settings.iso.empty()) {
         std::string boot;
         disc_ok = check_disc(paths, config, settings.iso, boot, disc_message);
@@ -145,6 +148,7 @@ int run() {
             worker->join();
             worker.reset();
             built = is_built(paths, config);
+            data_ok = check_data(paths, config, data_message);
         }
         ImGui_ImplSDLRenderer2_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -180,7 +184,11 @@ int run() {
             ImGui::EndDisabled();
             ImGui::SameLine();
             ImGui::TextWrapped("%s", settings.iso.empty() ? "none chosen" : settings.iso.c_str());
-            if (!settings.iso.empty()) {
+            if (data_ok) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.85f, 0.5f, 1));
+                ImGui::TextWrapped("Game files copied from the disc: the disc image is no longer needed.");
+                ImGui::PopStyleColor();
+            } else if (!settings.iso.empty()) {
                 if (disc_ok)
                     ImGui::TextColored(ImVec4(0.5f, 0.85f, 0.5f, 1), "Disc verified: %s", config.get("serial").c_str());
                 else
@@ -200,7 +208,7 @@ int run() {
                 if (!busy && ImGui::Button("Back")) progress.failed = false;
             } else if (!built) {
                 ImGui::TextWrapped("The first time, the launcher builds the game's code from your disc. It takes a few minutes and happens only once.");
-                ImGui::BeginDisabled(!disc_ok);
+                ImGui::BeginDisabled(!disc_ok && !data_ok);
                 if (ImGui::Button("Build the game", ImVec2(220, 44))) {
                     progress.cancel = false;
                     progress.running = true;
@@ -215,7 +223,7 @@ int run() {
                 ImGui::SetNextItemWidth(200);
                 if (ImGui::Combo("Internal resolution", &scale, scales, 3)) settings.scale = scale + 1;
                 ImGui::Spacing();
-                ImGui::BeginDisabled(!disc_ok);
+                ImGui::BeginDisabled(!data_ok);
                 if (ImGui::Button("Play", ImVec2(220, 50))) {
                     settings.save(paths);
                     if (play(paths, config, settings)) {
@@ -227,7 +235,7 @@ int run() {
                 }
                 ImGui::EndDisabled();
                 ImGui::SameLine();
-                ImGui::BeginDisabled(!disc_ok);
+                ImGui::BeginDisabled(!disc_ok && !data_ok);
                 if (ImGui::Button("Rebuild")) built = false;
                 ImGui::EndDisabled();
             }

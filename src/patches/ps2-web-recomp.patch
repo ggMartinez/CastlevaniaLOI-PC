@@ -154,7 +154,7 @@ index 0000000..10ed3b0
 +    register_generated_vu();
 +}
 diff --git a/host/main.cpp b/host/main.cpp
-index 2fdf426..50c763b 100644
+index 2fdf426..a5f0070 100644
 --- a/host/main.cpp
 +++ b/host/main.cpp
 @@ -13,11 +13,45 @@
@@ -227,7 +227,7 @@ index 2fdf426..50c763b 100644
      std::uint64_t run_frames = 0;
      for (int i = 2; i < argc; ++i) {
          const std::string a = argv[i];
-@@ -81,14 +128,31 @@ int main(int argc, char **argv) {
+@@ -81,14 +128,39 @@ int main(int argc, char **argv) {
              ps2::g_options.save_state_path = spec.substr(colon + 1);
          }
          else if (a == "--load-state" && i + 1 < argc) load_path = argv[++i];
@@ -251,6 +251,14 @@ index 2fdf426..50c763b 100644
      if (window && !open_window(fullscreen)) return 1;
  #endif
 +#ifdef PS2_GAME_DLL
++    // Without --disc the game reads the disc's files the launcher's build copied beside it.
++    if (ps2::g_options.disc_path.empty()) {
++        char exe[MAX_PATH];
++        const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
++        std::string data(exe, n);
++        data = data.substr(0, data.find_last_of("\\/") + 1) + "game\\data";
++        if (GetFileAttributesA(data.c_str()) != INVALID_FILE_ATTRIBUTES) ps2::g_options.disc_path = data;
++    }
 +    if (!load_game(game_path)) return 1;
 +#else
      register_generated_code();
@@ -779,6 +787,33 @@ index a7e0785..918cb85 100644
          for (std::uint32_t target : targets) {
              const std::uint64_t key = ps2::vu::program_key(programs[i].code.data(), ps2::vu::reachable(programs[i].code.data(), kMask, target), target);
              if (ps2::vu::branch_in_delay_slot(programs[i].code.data(), kMask, target)) continue;
+diff --git a/runtime/include/ps2/disc.hpp b/runtime/include/ps2/disc.hpp
+index 0f1af64..59f34af 100644
+--- a/runtime/include/ps2/disc.hpp
++++ b/runtime/include/ps2/disc.hpp
+@@ -2,6 +2,7 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
++#include <filesystem>
+ #include <functional>
+ #include <optional>
+ #include <string>
+@@ -22,6 +23,14 @@ using Probe = std::function<bool(std::uint64_t offset, std::size_t size)>;
+ 
+ bool open(const std::string &path);
+ bool open(const std::string &name, std::uint64_t size, Reader reader, Probe probe = {});
++// The disc's files copied out of the image into dir, with dir/layout.txt saying where each sat on
++// the disc (see write_layout): reads by sector become reads of those files, so no image is needed.
++bool open_directory(const std::filesystem::path &dir);
++// Every file and directory on the open disc, by path ("IOP/PADMAN.IRX"), for copying it out.
++std::vector<std::pair<std::string, Entry>> entries();
++// Writes the layout of the open disc, for open_directory.
++bool write_layout(const std::filesystem::path &file);
++inline constexpr const char *kLayoutFile = "layout.txt";
+ bool is_open();
+ bool read(std::uint32_t sector, std::uint32_t count, void *out);
+ bool ready(std::uint32_t sector, std::uint32_t count);
 diff --git a/runtime/include/ps2/generated.hpp b/runtime/include/ps2/generated.hpp
 index 45ff208..3f6b54b 100644
 --- a/runtime/include/ps2/generated.hpp
@@ -882,6 +917,164 @@ index d98afb7..8c50a93 100644
      default: return false;
      }
  }
+diff --git a/runtime/src/disc.cpp b/runtime/src/disc.cpp
+index 4491f35..b3353d4 100644
+--- a/runtime/src/disc.cpp
++++ b/runtime/src/disc.cpp
+@@ -4,7 +4,10 @@
+ #include <cctype>
+ #include <cstdio>
+ #include <cstring>
++#include <fstream>
+ #include <map>
++#include <mutex>
++#include <sstream>
+ 
+ namespace ps2::disc {
+ 
+@@ -17,6 +20,66 @@ std::uint64_t g_size = 0;
+ std::uint32_t g_layer1 = 0;
+ std::map<std::string, Entry> g_index;
+ 
++// The extracted disc (open_directory): each file's place on the disc, sorted by sector.
++struct Span {
++    std::uint32_t sector, sectors, size;
++    std::FILE *file;
++};
++std::vector<Span> g_spans;
++std::mutex g_spans_mutex;
++bool g_warned_unmapped = false;
++
++std::FILE *open_read(const std::filesystem::path &p) {
++#if defined(_WIN32)
++    return _wfopen(p.c_str(), L"rb");
++#else
++    return std::fopen(p.c_str(), "rb");
++#endif
++}
++
++void close_spans() {
++    for (const Span &s : g_spans) std::fclose(s.file);
++    g_spans.clear();
++}
++
++// A read of the extracted disc: file bytes where a file sat, zeros past its end and between files.
++std::size_t read_spans(std::uint64_t offset, void *out, std::size_t bytes) {
++    std::lock_guard lock(g_spans_mutex);
++    auto *dst = static_cast<std::uint8_t *>(out);
++    std::size_t done = 0;
++    while (done < bytes) {
++        const std::uint64_t at = offset + done;
++        const auto sector = static_cast<std::uint32_t>(at / kSector);
++        const auto it = std::upper_bound(g_spans.begin(), g_spans.end(), sector, [](std::uint32_t s, const Span &x) { return s < x.sector; });
++        std::size_t chunk;
++        if (it != g_spans.begin() && sector < std::prev(it)->sector + std::prev(it)->sectors) {
++            const Span &s = *std::prev(it);
++            const std::uint64_t in_file = at - static_cast<std::uint64_t>(s.sector) * kSector;
++            chunk = static_cast<std::size_t>(std::min<std::uint64_t>(bytes - done, static_cast<std::uint64_t>(s.sector + s.sectors) * kSector - at));
++            std::size_t got = 0;
++            if (in_file < s.size) {
++#if defined(_WIN32)
++                _fseeki64(s.file, static_cast<long long>(in_file), SEEK_SET);
++#else
++                fseeko(s.file, static_cast<off_t>(in_file), SEEK_SET);
++#endif
++                got = std::fread(dst + done, 1, static_cast<std::size_t>(std::min<std::uint64_t>(chunk, s.size - in_file)), s.file);
++            }
++            std::memset(dst + done + got, 0, chunk - got);
++        } else {
++            const std::uint64_t next = it == g_spans.end() ? ~0ull : static_cast<std::uint64_t>(it->sector) * kSector;
++            chunk = static_cast<std::size_t>(std::min<std::uint64_t>(bytes - done, next - at));
++            std::memset(dst + done, 0, chunk);
++            if (!g_warned_unmapped) {
++                g_warned_unmapped = true;
++                std::fprintf(stderr, "[disc] read of sector %u, which holds no file (the disc's own tables?): zeros (shown once)\n", sector);
++            }
++        }
++        done += chunk;
++    }
++    return bytes;
++}
++
+ std::uint32_t u32(const std::uint8_t *p) {
+     std::uint32_t v;
+     std::memcpy(&v, p, 4);
+@@ -84,6 +147,10 @@ bool open(const std::string &path) {
+ }
+ 
+ bool open(const std::string &name, std::uint64_t size, Reader reader, Probe probe) {
++    {
++        std::lock_guard lock(g_spans_mutex);
++        close_spans();  // copied files opened before stay locked on Windows otherwise
++    }
+     g_reader = std::move(reader);
+     g_probe = std::move(probe);
+     g_size = size;
+@@ -105,6 +172,64 @@ bool open(const std::string &name, std::uint64_t size, Reader reader, Probe prob
+     return true;
+ }
+ 
++bool open_directory(const std::filesystem::path &dir) {
++    std::ifstream in(dir / kLayoutFile);
++    if (!in) {
++        std::fprintf(stderr, "[disc] %s has no %s\n", dir.string().c_str(), kLayoutFile);
++        return false;
++    }
++    std::lock_guard lock(g_spans_mutex);
++    close_spans();
++    std::map<std::string, Entry> index;
++    std::uint64_t sectors = 0;
++    std::uint32_t layer1 = 0;
++    std::string line;
++    while (std::getline(in, line)) {
++        if (!line.empty() && line.back() == '\r') line.pop_back();
++        if (line.empty() || line[0] == '#') continue;
++        std::istringstream words(line);
++        std::string kind;
++        words >> kind;
++        if (kind == "sectors") words >> sectors;
++        else if (kind == "layer1") words >> layer1;
++        else if (kind == "F" || kind == "D") {
++            Entry e{0, 0, kind == "D"};
++            std::string path;
++            words >> e.sector >> e.size;
++            std::getline(words >> std::ws, path);
++            index[path] = e;
++            if (e.directory) continue;
++            std::FILE *f = open_read(dir / path);
++            if (!f) {
++                std::fprintf(stderr, "[disc] %s is missing from %s\n", path.c_str(), dir.string().c_str());
++                close_spans();
++                return false;
++            }
++            g_spans.push_back({e.sector, (e.size + kSector - 1) / kSector, e.size, f});
++        }
++    }
++    std::sort(g_spans.begin(), g_spans.end(), [](const Span &a, const Span &b) { return a.sector < b.sector; });
++    g_index = std::move(index);
++    g_layer1 = layer1;
++    g_size = sectors * kSector;
++    g_probe = {};
++    g_warned_unmapped = false;
++    g_reader = read_spans;
++    std::fprintf(stderr, "[disc] %s: %zu files extracted from the disc, %llu sectors, layer 1 at %u\n", dir.string().c_str(), g_spans.size(),
++                 static_cast<unsigned long long>(sectors), g_layer1);
++    return true;
++}
++
++std::vector<std::pair<std::string, Entry>> entries() { return {g_index.begin(), g_index.end()}; }
++
++bool write_layout(const std::filesystem::path &file) {
++    std::ofstream out(file, std::ios::trunc);
++    out << "# Where each file sat on the disc, for reads by sector: kind (F file, D directory) sector size path\n";
++    out << "sectors " << g_size / kSector << "\nlayer1 " << g_layer1 << "\n";
++    for (const auto &[path, e] : g_index) out << (e.directory ? "D " : "F ") << e.sector << ' ' << e.size << ' ' << path << '\n';
++    return static_cast<bool>(out);
++}
++
+ bool is_open() { return static_cast<bool>(g_reader); }
+ 
+ bool read(std::uint32_t sector, std::uint32_t count, void *out) {
 diff --git a/runtime/src/dmac.cpp b/runtime/src/dmac.cpp
 index 34fe4f2..cf942cb 100644
 --- a/runtime/src/dmac.cpp
@@ -1483,6 +1676,37 @@ index bc3cbd3..a5913d8 100644
      std::unique_ptr<std::uint8_t[]> buffer_;
      std::uint64_t capacity_ = 0;
      alignas(64) std::atomic<std::uint64_t> head_{0};
+diff --git a/runtime/src/iop/cdvd.cpp b/runtime/src/iop/cdvd.cpp
+index 218cbda..37d1d43 100644
+--- a/runtime/src/iop/cdvd.cpp
++++ b/runtime/src/iop/cdvd.cpp
+@@ -43,9 +43,9 @@ void finish_read() {
+     if (g_cd.callback) call_guest(g_cd.callback, 1);
+ }
+ 
+-std::uint64_t read_cycles(std::uint32_t sectors) {
+-    return usec_to_cycles(400) + static_cast<std::uint64_t>(sectors) * usec_to_cycles(250);
+-}
++// A read completes as soon as the host has the data: no imitation of a DVD drive's seek and
++// transfer time, only the short wait that keeps the read asynchronous, as the game expects.
++std::uint64_t read_cycles(std::uint32_t) { return usec_to_cycles(20); }
+ 
+ bool start_read(std::uint32_t lsn, std::uint32_t sectors, std::uint32_t buffer, std::uint32_t mode, bool ee_memory);
+ 
+diff --git a/runtime/src/iop/cdvdfsv.cpp b/runtime/src/iop/cdvdfsv.cpp
+index 6487e8d..22302a7 100644
+--- a/runtime/src/iop/cdvdfsv.cpp
++++ b/runtime/src/iop/cdvdfsv.cpp
+@@ -22,7 +22,8 @@ std::uint8_t bcd(int v) { return static_cast<std::uint8_t>(((v / 10) << 4) | (v
+ bool g_streaming = false;
+ std::uint32_t g_stream_pos = 0;
+ 
+-std::uint64_t delay(std::uint32_t sectors) { return usec_to_cycles(400) + static_cast<std::uint64_t>(sectors) * usec_to_cycles(200); }
++// No imitation of the drive's speed (see cdvd.cpp read_cycles): only a short asynchronous wait.
++std::uint64_t delay(std::uint32_t) { return usec_to_cycles(20); }
+ 
+ void read_to_ee(std::uint32_t sector, std::uint32_t count, std::uint32_t dst) {
+     std::vector<std::uint8_t> data(static_cast<std::size_t>(count) * disc::kSector);
 diff --git a/runtime/src/iop/libs.cpp b/runtime/src/iop/libs.cpp
 index 68bc21b..5bae753 100644
 --- a/runtime/src/iop/libs.cpp
@@ -1549,18 +1773,30 @@ index 7a0699c..3b48d93 100644
              g_watch_on = true;
              std::fprintf(stderr, "[watch] writes to 0x%08X..0x%08X will print\n", g_watch_base, g_watch_end);
 diff --git a/runtime/src/system.cpp b/runtime/src/system.cpp
-index 86f8ca9..d3f3332 100644
+index 86f8ca9..71a6d67 100644
 --- a/runtime/src/system.cpp
 +++ b/runtime/src/system.cpp
-@@ -410,6 +410,7 @@ void request_iop_sync() {
+@@ -410,10 +410,17 @@ void request_iop_sync() {
  
  void boot(std::uint32_t entry, const std::vector<std::string> &args) {
      init_watch();
 +    g_code_patches = g_options.widescreen ? 1u : 0u;
      hw::reset();
      kernel::reset();
-     if (!g_options.disc_path.empty() && !disc::open(g_options.disc_path))
-@@ -637,6 +638,7 @@ bool parse_axis(const std::string &spec, AxisPress &press) {
+-    if (!g_options.disc_path.empty() && !disc::open(g_options.disc_path))
+-        std::fprintf(stderr, "[ee] cannot open disc image %s\n", g_options.disc_path.c_str());
++    // --disc names a disc image, or a folder holding the disc's files copied out of one (with its
++    // layout.txt), which needs no image at all.
++    if (!g_options.disc_path.empty()) {
++        std::error_code ec;
++        const bool folder = std::filesystem::is_directory(g_options.disc_path, ec);
++        if (!(folder ? disc::open_directory(g_options.disc_path) : disc::open(g_options.disc_path)))
++            std::fprintf(stderr, "[ee] cannot open the disc %s\n", g_options.disc_path.c_str());
++    }
+     iop::set_trace(g_options.trace_iop_modules, g_options.trace_iop_hle);
+     iop::reset();
+     std::vector<std::string> guest_args = args;
+@@ -637,6 +644,7 @@ bool parse_axis(const std::string &spec, AxisPress &press) {
  }
  
  double gpu_busy_ms() { return gs::gpu_busy_ms(); }

@@ -214,6 +214,7 @@ Paths Paths::from_exe() {
     p.root = fs::path(std::wstring(exe, n)).parent_path();
     p.compiler = p.root / "compiler";
     p.game = p.root / "game";
+    p.data = p.game / "data";
     p.saves = p.root / "saves";
     p.logs = p.root / "logs";
     return p;
@@ -259,11 +260,10 @@ std::vector<std::string> Progress::lines() const {
     return lines_;
 }
 
-bool check_disc(const Paths &, const GameConfig &config, const std::string &iso, std::string &boot, std::string &error) {
-    if (!open_disc(iso)) {
-        error = "Cannot open the disc image.";
-        return false;
-    }
+namespace {
+
+// Checks the open disc (an image or the copied files) holds the configured release.
+bool check_open_disc(const GameConfig &config, std::string &boot, std::string &error) {
     std::vector<std::uint8_t> cnf, elf;
     if (!read_disc_file("SYSTEM.CNF", cnf)) {
         error = "This is not a PlayStation 2 disc image (no SYSTEM.CNF).";
@@ -282,8 +282,91 @@ bool check_disc(const Paths &, const GameConfig &config, const std::string &iso,
     return true;
 }
 
+// Copies every file of the open disc image into paths.data, with the layout that lets the game
+// read them by sector. It fills a folder beside it first and renames that at the end, so a
+// cancelled or failed copy never leaves a partial paths.data behind.
+bool copy_disc_files(const Paths &paths, Progress &progress, std::string &error) {
+    const fs::path partial = paths.data.parent_path() / "data.partial";
+    std::error_code ec;
+    fs::remove_all(partial, ec);
+    fs::create_directories(partial, ec);
+    const auto entries = ps2::disc::entries();
+    std::uint64_t total = 0, copied = 0;
+    for (const auto &[path, e] : entries)
+        if (!e.directory) total += e.size;
+    constexpr std::uint32_t kChunkSectors = 2048;  // 4 MB
+    std::vector<std::uint8_t> buffer(static_cast<std::size_t>(kChunkSectors) * ps2::disc::kSector);
+    for (const auto &[path, e] : entries) {
+        const fs::path target = partial / fs::path(path);
+        if (e.directory) {
+            fs::create_directories(target, ec);
+            continue;
+        }
+        fs::create_directories(target.parent_path(), ec);
+        std::ofstream out(target, std::ios::binary | std::ios::trunc);
+        for (std::uint64_t done = 0; done < e.size;) {
+            if (progress.cancel) {
+                error = "cancelled";
+                return false;
+            }
+            const std::uint64_t left = e.size - done;
+            const auto sectors = static_cast<std::uint32_t>(std::min<std::uint64_t>(kChunkSectors, (left + ps2::disc::kSector - 1) / ps2::disc::kSector));
+            if (!ps2::disc::read(e.sector + static_cast<std::uint32_t>(done / ps2::disc::kSector), sectors, buffer.data())) {
+                error = "cannot read " + path + " from the disc image";
+                return false;
+            }
+            const auto bytes = static_cast<std::size_t>(std::min<std::uint64_t>(left, static_cast<std::uint64_t>(sectors) * ps2::disc::kSector));
+            out.write(reinterpret_cast<const char *>(buffer.data()), static_cast<std::streamsize>(bytes));
+            done += bytes;
+            copied += bytes;
+            progress.fraction = 0.02f + 0.13f * static_cast<float>(copied) / static_cast<float>(std::max<std::uint64_t>(total, 1));
+        }
+        if (!out) {
+            error = "cannot write " + utf8(target.wstring()) + " (is the disk full?)";
+            return false;
+        }
+        progress.line("copied " + path);
+    }
+    if (!ps2::disc::write_layout(partial / ps2::disc::kLayoutFile)) {
+        error = "cannot write the disc layout";
+        return false;
+    }
+    fs::remove_all(paths.data, ec);
+    fs::rename(partial, paths.data, ec);
+    if (ec) {
+        error = "cannot move the copied files into place: " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool check_disc(const Paths &, const GameConfig &config, const std::string &iso, std::string &boot, std::string &error) {
+    if (!open_disc(iso)) {
+        error = "Cannot open the disc image.";
+        return false;
+    }
+    return check_open_disc(config, boot, error);
+}
+
+bool check_data(const Paths &paths, const GameConfig &config, std::string &error) {
+    std::error_code ec;
+    if (!fs::exists(paths.data / ps2::disc::kLayoutFile, ec) || !ps2::disc::open_directory(paths.data)) {
+        error = "The game's files have not been copied from the disc yet.";
+        return false;
+    }
+    for (const auto &[path, e] : ps2::disc::entries())
+        if (!e.directory && fs::file_size(paths.data / fs::path(path), ec) != e.size) {
+            error = "The game's copied file " + path + " is damaged: build the game again from the disc image.";
+            return false;
+        }
+    std::string boot;
+    return check_open_disc(config, boot, error);
+}
+
 bool is_built(const Paths &paths, const GameConfig &config) {
-    if (!fs::exists(paths.root / "game.dll") || !fs::exists(paths.game / config.get("boot"))) return false;
+    if (!fs::exists(paths.root / "game.dll") || !fs::exists(paths.game / config.get("boot")) || !fs::exists(paths.data / ps2::disc::kLayoutFile)) return false;
     const auto stamp = read_keys(paths.game / "built.txt");
     const auto get = [&](const char *k) {
         const auto it = stamp.find(k);
@@ -309,20 +392,32 @@ bool build(const Paths &paths, const GameConfig &config, const std::string &iso,
     };
     const auto cancelled = [&] { return progress.cancel.load() ? fail("cancelled") : false; };
 
-    progress.status("Checking the disc");
-    std::string boot, error;
-    if (!check_disc(paths, config, iso, boot, error)) return fail(error);
-    progress.line("disc matches " + config.get("serial") + " (" + boot + ")");
-    progress.fraction = 0.02f;
+    std::string boot = config.get("boot"), error;
+    if (check_data(paths, config, error)) {
+        progress.status("Using the game's files copied from the disc");
+        progress.line("copied files match " + config.get("serial") + ": the disc image is not needed");
+    } else {
+        progress.status("Checking the disc");
+        if (!check_disc(paths, config, iso, boot, error)) return fail(error);
+        progress.line("disc matches " + config.get("serial") + " (" + boot + ")");
+        progress.fraction = 0.02f;
+        progress.status("Copying the game's files off the disc");
+        if (!copy_disc_files(paths, progress, error)) return fail(error);
+        if (!check_data(paths, config, error)) return fail(error);
+    }
+    progress.fraction = 0.15f;
 
-    progress.status("Taking the game's executable off the disc");
-    fs::remove_all(paths.game, ec);
+    progress.status("Taking the game's executable from its files");
+    std::vector<fs::path> old_build;  // everything of the last build but the copied files
+    for (const auto &e : fs::directory_iterator(paths.game, ec))
+        if (e.path().filename() != paths.data.filename()) old_build.push_back(e.path());
+    for (const auto &p : old_build) fs::remove_all(p, ec);
     fs::create_directories(paths.game / "generated", ec);
     fs::create_directories(paths.game / "vu1", ec);
     fs::create_directories(paths.game / "obj", ec);
     std::vector<std::uint8_t> elf;
     if (!read_disc_file(boot, elf) || !write_file(paths.game / boot, elf.data(), elf.size())) return fail("cannot write " + boot);
-    progress.fraction = 0.04f;
+    progress.fraction = 0.16f;
 
     progress.status("Translating the game's code to C++");
     const fs::path tools = paths.compiler;
