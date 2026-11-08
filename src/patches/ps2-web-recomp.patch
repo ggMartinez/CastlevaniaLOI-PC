@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 6765f07..21ea9db 100644
+index 6765f07..5cf2372 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,13 +14,16 @@ index 6765f07..21ea9db 100644
  if(EMSCRIPTEN)
      add_compile_options(-msimd128 -mtail-call -fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=0 -pthread)
      add_link_options(-msimd128 -mtail-call -fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=0 -pthread)
-@@ -23,12 +28,19 @@ if(NOT EMSCRIPTEN)
+@@ -23,12 +28,22 @@ if(NOT EMSCRIPTEN)
  
      add_executable(vujit_dump recomp/vujit_dump.cpp runtime/src/vu_jit.cpp)
      target_include_directories(vujit_dump PRIVATE runtime/include runtime/src)
 +    add_executable(graphics_settings_test tests/graphics_settings_test.cpp runtime/src/graphics.cpp)
 +    target_include_directories(graphics_settings_test PRIVATE runtime/include)
 +    target_compile_options(graphics_settings_test PRIVATE -Wall -Wextra)
++    add_executable(mcfs_test tests/mcfs_test.cpp runtime/src/iop/mcfs.cpp)
++    target_include_directories(mcfs_test PRIVATE runtime/src)
++    target_compile_options(mcfs_test PRIVATE -Wall -Wextra)
      add_executable(vurecomp recomp/vurecomp.cpp)
 +    add_executable(ioprecomp recomp/ioprecomp.cpp)
 +    target_include_directories(ioprecomp PRIVATE runtime/include)
@@ -34,7 +37,7 @@ index 6765f07..21ea9db 100644
      runtime/src/memory.cpp
      runtime/src/dispatch.cpp
      runtime/src/system.cpp
-@@ -47,6 +59,7 @@ add_library(ps2runtime STATIC
+@@ -47,6 +62,7 @@ add_library(ps2runtime STATIC
      runtime/src/gs/queue.cpp
      runtime/src/gs/raster.cpp
      runtime/src/iop/cpu.cpp
@@ -42,13 +45,15 @@ index 6765f07..21ea9db 100644
      runtime/src/iop/kernel.cpp
      runtime/src/iop/libs.cpp
      runtime/src/iop/hw.cpp
-@@ -55,12 +68,24 @@ add_library(ps2runtime STATIC
+@@ -55,12 +71,26 @@ add_library(ps2runtime STATIC
      runtime/src/iop/io.cpp
      runtime/src/iop/cdvd.cpp
      runtime/src/iop/sif.cpp
 -    runtime/src/iop/cdvdfsv.cpp)
 +    runtime/src/iop/cdvdfsv.cpp
-+    runtime/src/iop/padman.cpp)
++    runtime/src/iop/padman.cpp
++    runtime/src/iop/mcfs.cpp
++    runtime/src/iop/mcserv.cpp)
  target_include_directories(ps2runtime PUBLIC runtime/include)
  target_compile_options(ps2runtime PRIVATE -Wall -Wextra)
  
@@ -69,7 +74,7 @@ index 6765f07..21ea9db 100644
      set(PS2_GS_WGSL "${CMAKE_BINARY_DIR}/gs_wgsl.cpp")
      add_custom_command(OUTPUT "${PS2_GS_WGSL}"
          COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/runtime/src/gs/gpu/gs.wgsl -DOUT=${PS2_GS_WGSL} -DNAME=kGsShader -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
-@@ -69,22 +94,44 @@ if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
+@@ -69,22 +99,44 @@ if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
      add_custom_command(OUTPUT "${PS2_BLIT_WGSL}"
          COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/runtime/src/gs/gpu/blit.wgsl -DOUT=${PS2_BLIT_WGSL} -DNAME=kBlitShader -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
          DEPENDS runtime/src/gs/gpu/blit.wgsl cmake/embed.cmake)
@@ -116,7 +121,7 @@ index 6765f07..21ea9db 100644
      add_library(ps2game STATIC ${PS2_UNITS})
      target_include_directories(ps2game PRIVATE "${PS2_GENERATED}")
      target_link_libraries(ps2game PUBLIC ps2runtime)
-@@ -109,9 +156,25 @@ if(PS2_GENERATED)
+@@ -109,9 +161,25 @@ if(PS2_GENERATED)
          set_target_properties(ps2web PROPERTIES SUFFIX ".html" LINK_DEPENDS ${CMAKE_SOURCE_DIR}/web/shell.html)
          return()
      endif()
@@ -143,7 +148,7 @@ index 6765f07..21ea9db 100644
      if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
          target_sources(ps2run PRIVATE host/profile.cpp)
          target_compile_definitions(ps2run PRIVATE PS2_PROFILE)
-@@ -121,5 +184,43 @@ if(PS2_GENERATED)
+@@ -121,5 +189,43 @@ if(PS2_GENERATED)
          target_sources(ps2run PRIVATE host/window.cpp)
          target_compile_definitions(ps2run PRIVATE PS2_WINDOW)
          target_link_libraries(ps2run PRIVATE SDL2::SDL2)
@@ -4048,10 +4053,58 @@ index bc3cbd3..a5913d8 100644
      std::uint64_t capacity_ = 0;
      alignas(64) std::atomic<std::uint64_t> head_{0};
 diff --git a/runtime/src/iop/cdvd.cpp b/runtime/src/iop/cdvd.cpp
-index 218cbda..37d1d43 100644
+index 218cbda..ea6e6f7 100644
 --- a/runtime/src/iop/cdvd.cpp
 +++ b/runtime/src/iop/cdvd.cpp
-@@ -43,9 +43,9 @@ void finish_read() {
+@@ -1,17 +1,38 @@
+ #include "kernel.hpp"
+ 
+ #include "ps2/disc.hpp"
++#include "ps2/system.hpp"
+ 
+ #include "ps2/state.hpp"
+ 
+ #include <algorithm>
+ #include <cstdio>
++#include <cstdlib>
+ #include <ctime>
+ #include <map>
+ #include <memory>
+ 
+ namespace ps2::iop {
+ 
++void read_clock(std::uint8_t out[8]) {
++    // The console's clock keeps Japan time (UTC+9). PS2_FIXED_CLOCK=<unix seconds> starts it at a fixed time
++    // and advances it with the game's frames, so that two runs date their memory card saves the same.
++    static const char *fixed = std::getenv("PS2_FIXED_CLOCK");
++    const std::time_t now = fixed ? static_cast<std::time_t>(std::strtoll(fixed, nullptr, 10) + static_cast<long long>(frame_count() / 60u))
++                                  : std::time(nullptr);
++    const std::time_t japan = now + 9 * 3600;
++    const std::tm *tm = std::gmtime(&japan);
++    const auto bcd = [](int v) { return static_cast<std::uint8_t>(((v / 10) << 4) | (v % 10)); };
++    out[0] = 0;
++    out[1] = bcd(tm->tm_sec);
++    out[2] = bcd(tm->tm_min);
++    out[3] = bcd(tm->tm_hour);
++    out[4] = 0;
++    out[5] = bcd(tm->tm_mday);
++    out[6] = bcd(tm->tm_mon + 1);
++    out[7] = bcd(tm->tm_year % 100);
++}
++
+ namespace kernel {
+ 
+ namespace {
+@@ -32,8 +53,6 @@ struct CdState {
+     std::vector<int> sync_waiters;
+ } g_cd;
+ 
+-std::uint8_t bcd(int v) { return static_cast<std::uint8_t>(((v / 10) << 4) | (v % 10)); }
+-
+ void finish_read() {
+     g_cd.busy = false;
+     for (int id : g_cd.sync_waiters)
+@@ -43,9 +62,9 @@ void finish_read() {
      if (g_cd.callback) call_guest(g_cd.callback, 1);
  }
  
@@ -4064,11 +4117,44 @@ index 218cbda..37d1d43 100644
  
  bool start_read(std::uint32_t lsn, std::uint32_t sectors, std::uint32_t buffer, std::uint32_t mode, bool ee_memory);
  
+@@ -121,20 +140,14 @@ void install_cdvd() {
+         if (arg(c, 1)) write32(arg(c, 1), 0);
+         c.r[2] = 1;
+     });
+-    def("cdvdman", 24, "sceCdReadClock", [](Cpu &c) {
+-        const std::time_t t = std::time(nullptr);
+-        const std::tm *tm = std::gmtime(&t);
+-        const std::uint32_t p = arg(c, 0);
+-        write8(p + 0, 0);
+-        write8(p + 1, bcd(tm->tm_sec));
+-        write8(p + 2, bcd(tm->tm_min));
+-        write8(p + 3, bcd((tm->tm_hour + 9) % 24));
+-        write8(p + 4, 0);
+-        write8(p + 5, bcd(tm->tm_mday));
+-        write8(p + 6, bcd(tm->tm_mon + 1));
+-        write8(p + 7, bcd(tm->tm_year % 100));
++    const auto read_clock_hle = [](Cpu &c) {
++        std::uint8_t clock[8];
++        read_clock(clock);
++        for (std::uint32_t i = 0; i < 8; ++i) write8(arg(c, 0) + i, clock[i]);
+         c.r[2] = 1;
+-    });
++    };
++    def("cdvdman", 24, "sceCdReadClock", read_clock_hle);
++    def("cdvdman", 51, "sceCdRC", read_clock_hle);  // the same call under its later name (MCMAN uses it to date saves)
+     def("cdvdman", 28, "sceCdStatus", [](Cpu &c) { c.r[2] = g_cd.busy ? 0x06u : 0x0Au; });
+     def("cdvdman", 37, "sceCdCallback", [](Cpu &c) { c.r[2] = g_cd.callback; g_cd.callback = arg(c, 0); });
+     def("cdvdman", 38, "sceCdPause", [](Cpu &c) { c.r[2] = 1; });
 diff --git a/runtime/src/iop/cdvdfsv.cpp b/runtime/src/iop/cdvdfsv.cpp
-index 6487e8d..22302a7 100644
+index 6487e8d..88b1f4b 100644
 --- a/runtime/src/iop/cdvdfsv.cpp
 +++ b/runtime/src/iop/cdvdfsv.cpp
-@@ -22,7 +22,8 @@ std::uint8_t bcd(int v) { return static_cast<std::uint8_t>(((v / 10) << 4) | (v
+@@ -17,12 +17,11 @@ namespace {
+ std::uint32_t ee32(std::uint32_t a) { return load<std::uint32_t>(ps2::g_ram + (a & (ps2::kRamSize - 1))); }
+ void set_ee32(std::uint32_t a, std::uint32_t v) { store<std::uint32_t>(ps2::g_ram + (a & (ps2::kRamSize - 1)), v); }
+ 
+-std::uint8_t bcd(int v) { return static_cast<std::uint8_t>(((v / 10) << 4) | (v % 10)); }
+-
  bool g_streaming = false;
  std::uint32_t g_stream_pos = 0;
  
@@ -4078,6 +4164,26 @@ index 6487e8d..22302a7 100644
  
  void read_to_ee(std::uint32_t sector, std::uint32_t count, std::uint32_t dst) {
      std::vector<std::uint8_t> data(static_cast<std::size_t>(count) * disc::kSector);
+@@ -64,18 +63,8 @@ void install_cdvdfsv() {
+     sif::register_hle_server(0x80000593u, [](std::uint32_t method, std::uint32_t args, std::uint32_t, std::uint32_t ret, std::uint32_t ret_size) {
+         switch (method) {
+         case 0x01: {
+-            const std::time_t t = std::time(nullptr);
+-            const std::tm *tm = std::gmtime(&t);
+             set_ee32(ret, 1);
+-            std::uint8_t *clock = ps2::g_ram + ret + 4;
+-            clock[0] = 0;
+-            clock[1] = bcd(tm->tm_sec);
+-            clock[2] = bcd(tm->tm_min);
+-            clock[3] = bcd((tm->tm_hour + 9) % 24);
+-            clock[4] = 0;
+-            clock[5] = bcd(tm->tm_mday);
+-            clock[6] = bcd(tm->tm_mon + 1);
+-            clock[7] = bcd(tm->tm_year % 100);
++            read_clock(ps2::g_ram + ret + 4);
+             break;
+         }
+         case 0x03: set_ee32(ret, 0x14); break;
 diff --git a/runtime/src/iop/compiled.cpp b/runtime/src/iop/compiled.cpp
 new file mode 100644
 index 0000000..ed9271c
@@ -4364,7 +4470,7 @@ index da4b3e4..b4e6744 100644
              const std::uint32_t a = pc & (kRamSize - 1);
              if (g_probes[a >> 5] & (1u << ((a >> 2) & 7u))) probe(c, pc);
 diff --git a/runtime/src/iop/iop.hpp b/runtime/src/iop/iop.hpp
-index 275374b..0b25b73 100644
+index 275374b..3941b78 100644
 --- a/runtime/src/iop/iop.hpp
 +++ b/runtime/src/iop/iop.hpp
 @@ -1,5 +1,7 @@
@@ -4389,7 +4495,17 @@ index 275374b..0b25b73 100644
  extern Cpu g_cpu;
  
  inline std::uint32_t phys(std::uint32_t a) { return a & 0x1FFFFFFFu; }
-@@ -75,6 +70,8 @@ std::int32_t load_module_buffer(const std::vector<std::uint8_t> &data, const std
+@@ -62,6 +57,9 @@ using HleFunction = std::function<void(Cpu &)>;
+ std::uint32_t register_hle(const std::string &library, std::uint32_t index, HleFunction function);
+ void call_hle(Cpu &c, std::uint32_t id);
+ 
++// The console clock as sceCdCLOCK: status, then seconds, minutes, hours, 0, day, month, year (BCD, Japan time).
++void read_clock(std::uint8_t out[8]);
++
+ void reset();
+ void run(std::uint64_t ee_cycles);
+ std::uint64_t cycles();
+@@ -75,6 +73,8 @@ std::int32_t load_module_buffer(const std::vector<std::uint8_t> &data, const std
                                  std::function<void(int, int)> done = {});
  // modload's LoadModuleBuffer and StartModule: link a module without running it, then run its start routine
  std::int32_t link_module(const std::vector<std::uint8_t> &data, const std::string &path);
@@ -4399,16 +4515,17 @@ index 275374b..0b25b73 100644
  void set_trace(bool modules, bool hle);
  
 diff --git a/runtime/src/iop/kernel.cpp b/runtime/src/iop/kernel.cpp
-index 9349970..832e43c 100644
+index 9349970..90c0a09 100644
 --- a/runtime/src/iop/kernel.cpp
 +++ b/runtime/src/iop/kernel.cpp
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
  #include "kernel.hpp"
++#include "mcserv.hpp"
 +#include "padman.hpp"
  
  #include "hw.hpp"
  #include "io.hpp"
-@@ -580,6 +581,7 @@ void call_hle(Cpu &c, std::uint32_t id) {
+@@ -580,6 +582,7 @@ void call_hle(Cpu &c, std::uint32_t id) {
  void reset() {
      hw::reset();
      kernel::boot();
@@ -4416,7 +4533,7 @@ index 9349970..832e43c 100644
  }
  
  std::uint64_t cycles() { return kernel::g_now; }
-@@ -629,7 +631,10 @@ void run(std::uint64_t ee_cycles) {
+@@ -629,7 +632,10 @@ void run(std::uint64_t ee_cycles) {
          if (budget <= 0) budget = 1;
          const std::int64_t given = budget;
          execute(g_cpu, budget);
@@ -4428,7 +4545,7 @@ index 9349970..832e43c 100644
      }
  }
  
-@@ -708,10 +713,43 @@ std::int32_t link_module(const std::vector<std::uint8_t> &data, const std::strin
+@@ -708,10 +714,43 @@ std::int32_t link_module(const std::vector<std::uint8_t> &data, const std::strin
      const int id = g_next_module++;
      g_modules[id] = Module{id, name, base, total, base + entry, base + gp};
      g_module_paths[id] = path;
@@ -4472,7 +4589,7 @@ index 9349970..832e43c 100644
  bool start_module(int id, const std::string &args, std::function<void(int, int)> done) {
      using namespace kernel;
      auto found = g_modules.find(id);
-@@ -746,6 +784,7 @@ bool start_module(int id, const std::string &args, std::function<void(int, int)>
+@@ -746,6 +785,7 @@ bool start_module(int id, const std::string &args, std::function<void(int, int)>
          if ((result & 3u) == 1u) {
              const Module &m = g_modules[id];
              free(m.base);
@@ -4480,11 +4597,12 @@ index 9349970..832e43c 100644
          }
      };
      start_thread(tid, static_cast<std::uint32_t>(argv.size()), argv_at);
-@@ -846,10 +885,12 @@ void state(ps2::state::Stream &s) {
+@@ -846,10 +886,13 @@ void state(ps2::state::Stream &s) {
      kernel::libs_state(s);
      kernel::cdvd_state(s);
      kernel::cdvdfsv_state(s);
 +    if (s.version() >= 8) padman::state(s);
++    if (s.version() >= 9) mcserv::state(s);
      hw::state(s);
      sio2::state(s);
      spu2::state(s);
@@ -4531,6 +4649,917 @@ index 68bc21b..e4b5393 100644
  }
  
  }
+diff --git a/runtime/src/iop/mcfs.cpp b/runtime/src/iop/mcfs.cpp
+new file mode 100644
+index 0000000..c8743de
+--- /dev/null
++++ b/runtime/src/iop/mcfs.cpp
+@@ -0,0 +1,530 @@
++#include "mcfs.hpp"
++
++#include <algorithm>
++#include <cstring>
++
++namespace ps2::iop::mcfs {
++
++namespace {
++
++constexpr std::uint32_t kEnd = 0xFFFFFFFFu, kFree = 0x7FFFFFFFu, kUsed = 0x80000000u;
++constexpr std::uint32_t kEntriesPerFatCluster = kClusterBytes / 4;
++
++// Entry modes.
++constexpr std::uint16_t kExists = 0x8000, kHidden = 0x2000, kPs2 = 0x0400, kClosed = 0x0080, kSubdir = 0x0020, kFileMode = 0x0010;
++constexpr std::uint16_t kRwx = 0x0007;
++constexpr std::uint16_t kDirMode = kExists | kPs2 | kSubdir | kRwx;            // 0x8427
++constexpr std::uint16_t kNewFileMode = kExists | kPs2 | kFileMode | kRwx;      // 0x8417; closed adds 0x80
++
++// Directory entry layout.
++constexpr std::size_t kMode = 0, kLength = 4, kCreated = 8, kCluster = 16, kDirEntry = 20, kModified = 24, kAttr = 32, kName = 64;
++constexpr std::size_t kNameBytes = 32;
++
++constexpr char kMagic[] = "Sony PS2 Memory Card Format ";
++
++std::uint32_t u32(const std::uint8_t *p) { std::uint32_t v; std::memcpy(&v, p, 4); return v; }
++std::uint16_t u16(const std::uint8_t *p) { std::uint16_t v; std::memcpy(&v, p, 2); return v; }
++void put32(std::uint8_t *p, std::uint32_t v) { std::memcpy(p, &v, 4); }
++void put16(std::uint8_t *p, std::uint16_t v) { std::memcpy(p, &v, 2); }
++
++std::string name_of(const std::uint8_t *e) {
++    const char *n = reinterpret_cast<const char *>(e + kName);
++    return std::string(n, strnlen(n, kNameBytes));
++}
++
++void make_entry(std::uint8_t *e, std::uint16_t mode, std::uint32_t length, std::uint32_t cluster, std::uint32_t dir_entry,
++                const Time &now, const std::string &name) {
++    std::memset(e, 0, kEntryBytes);
++    put16(e + kMode, mode);
++    put32(e + kLength, length);
++    std::memcpy(e + kCreated, now.data(), 8);
++    put32(e + kCluster, cluster);
++    put32(e + kDirEntry, dir_entry);
++    std::memcpy(e + kModified, now.data(), 8);
++    std::memcpy(e + kName, name.data(), std::min(name.size(), kNameBytes));
++}
++
++// '*' matches any run of characters, '?' any one.
++bool matches(const char *pattern, const char *name) {
++    if (*pattern == 0) return *name == 0;
++    if (*pattern == '*') return matches(pattern + 1, name) || (*name && matches(pattern, name + 1));
++    if (*name == 0) return false;
++    return (*pattern == '?' || *pattern == *name) && matches(pattern + 1, name + 1);
++}
++
++std::uint8_t parity(std::uint8_t b) {
++    b ^= b >> 4;
++    b ^= b >> 2;
++    b ^= b >> 1;
++    return b & 1;
++}
++
++}  // namespace
++
++void page_ecc(const std::uint8_t *data, std::uint8_t *ecc) {
++    static const std::uint8_t kColumnMasks[7] = {0x55, 0x33, 0x0F, 0x00, 0xAA, 0xCC, 0xF0};
++    for (int chunk = 0; chunk < 4; ++chunk) {
++        const std::uint8_t *s = data + chunk * 128;
++        std::uint8_t column = 0x77, line0 = 0x7F, line1 = 0x7F;
++        for (int i = 0; i < 128; ++i) {
++            std::uint8_t mask = 0;
++            for (int m = 0; m < 7; ++m) mask |= static_cast<std::uint8_t>(parity(s[i] & kColumnMasks[m]) << m);
++            column ^= mask;
++            if (parity(s[i])) {
++                line0 ^= static_cast<std::uint8_t>(~i);
++                line1 ^= static_cast<std::uint8_t>(i);
++            }
++        }
++        ecc[chunk * 3 + 0] = column;
++        ecc[chunk * 3 + 1] = line0 & 0x7F;
++        ecc[chunk * 3 + 2] = line1 & 0x7F;
++    }
++}
++
++bool Card::formatted() const {
++    return image_.size() >= kImageBytes && std::memcmp(page(0), kMagic, sizeof kMagic - 1) == 0;
++}
++
++Card::Geometry Card::geometry() {
++    Geometry g;
++    const std::uint8_t *sb = cluster(0).data();  // through the cache: a format in progress has it there
++    g.alloc_offset = u32(sb + 0x34);
++    g.alloc_end = u32(sb + 0x38);
++    g.root = u32(sb + 0x3C);
++    g.backup1 = u32(sb + 0x40);
++    g.backup2 = u32(sb + 0x44);
++    for (int i = 0; i < 32; ++i) g.ifc[i] = u32(sb + 0x50 + 4 * i);
++    g.search_from = u32(sb + 0x16C);
++    g.max_alloc = u32(sb + 0x170);
++    return g;
++}
++
++Card::Cluster &Card::cluster(std::uint32_t absolute) {
++    auto it = cache_.find(absolute);
++    if (it != cache_.end()) return it->second;
++    Cluster &c = cache_[absolute];
++    for (std::uint32_t p = 0; p < kPagesPerCluster; ++p) {
++        const std::uint32_t n = absolute * kPagesPerCluster + p;
++        if (n < kPages) std::memcpy(c.data() + p * kPageData, page(n), kPageData);
++        else std::memset(c.data() + p * kPageData, 0xFF, kPageData);
++    }
++    return c;
++}
++
++Card::Cluster &Card::change(std::uint32_t absolute) {
++    const std::uint32_t block = absolute * kPagesPerCluster / kPagesPerBlock;
++    if (std::find(dirty_blocks_.begin(), dirty_blocks_.end(), block) == dirty_blocks_.end()) dirty_blocks_.push_back(block);
++    return cluster(absolute);
++}
++
++std::uint32_t Card::fat(std::uint32_t n) {
++    const std::uint32_t indirect = g_.ifc[(n / kEntriesPerFatCluster / kEntriesPerFatCluster) % 32];
++    const std::uint32_t table = u32(cluster(indirect).data() + 4 * (n / kEntriesPerFatCluster % kEntriesPerFatCluster));
++    return u32(cluster(table).data() + 4 * (n % kEntriesPerFatCluster));
++}
++
++void Card::set_fat(std::uint32_t n, std::uint32_t v) {
++    const std::uint32_t indirect = g_.ifc[(n / kEntriesPerFatCluster / kEntriesPerFatCluster) % 32];
++    const std::uint32_t table = u32(cluster(indirect).data() + 4 * (n / kEntriesPerFatCluster % kEntriesPerFatCluster));
++    put32(change(table).data() + 4 * (n % kEntriesPerFatCluster), v);
++}
++
++// The lowest free cluster, marked as the end of a chain (MCMAN's search, from the superblock's start).
++std::uint32_t Card::allocate() {
++    for (std::uint32_t n = g_.search_from; n < g_.max_alloc; ++n) {
++        if (fat(n) & kUsed) continue;
++        set_fat(n, kEnd);
++        return n;
++    }
++    return kEnd;
++}
++
++int Card::free_clusters() {
++    if (!formatted()) return 0;
++    g_ = geometry();
++    int count = 0;
++    for (std::uint32_t n = g_.search_from; n < g_.max_alloc; ++n)
++        if (!(fat(n) & kUsed)) ++count;
++    return count;
++}
++
++// The cluster `steps` links after `first` in its chain; with `extend`, clusters are added at the end as needed.
++std::uint32_t Card::chain_at(std::uint32_t first, std::uint32_t steps, bool extend) {
++    std::uint32_t c = first;
++    for (std::uint32_t i = 0; i < steps; ++i) {
++        const std::uint32_t next = fat(c);
++        if (next == kEnd || !(next & kUsed)) {
++            if (!extend) return kEnd;
++            const std::uint32_t added = allocate();
++            if (added == kEnd) return kEnd;
++            set_fat(c, kUsed | added);
++            c = added;
++        } else {
++            c = next & ~kUsed;
++        }
++    }
++    return c;
++}
++
++std::uint8_t *Card::entry(std::uint32_t dir_cluster, std::uint32_t index, bool for_change) {
++    const std::uint32_t c = chain_at(dir_cluster, index / 2, for_change);
++    if (c == kEnd) return nullptr;
++    const std::uint32_t absolute = c + g_.alloc_offset;
++    Cluster &data = for_change ? change(absolute) : cluster(absolute);
++    return data.data() + (index % 2) * kEntryBytes;
++}
++
++std::uint32_t Card::dir_length(const Dir &d) {
++    const std::uint8_t *e = entry(d.holder_cluster, d.holder_index, false);
++    return e ? u32(e + kLength) : 0;
++}
++
++void Card::set_dir_length(const Dir &d, std::uint32_t n) {
++    if (std::uint8_t *e = entry(d.holder_cluster, d.holder_index, true)) put32(e + kLength, n);
++}
++
++// A directory whose entry is entry `index` of the directory starting at `cluster`.
++Card::Dir Card::dir_of(std::uint32_t cluster, std::uint32_t index) {
++    const std::uint8_t *e = entry(cluster, index, false);
++    return Dir{e ? u32(e + kCluster) : kEnd, cluster, index};
++}
++
++int Card::find(const Dir &d, const std::string &name) {
++    const std::uint32_t n = dir_length(d);
++    for (std::uint32_t i = 0; i < n; ++i) {
++        const std::uint8_t *e = entry(d.cluster, i, false);
++        if (e && (u16(e + kMode) & kExists) && name_of(e) == name) return static_cast<int>(i);
++    }
++    return -1;
++}
++
++// Splits a path into the directory it is in and its last part; every directory on the way must exist.
++int Card::resolve_dir(const std::string &path, Dir &dir, std::string &last) {
++    dir = Dir{g_.root, g_.root, 0};
++    std::vector<std::string> parts;
++    std::size_t at = 0;
++    while (at <= path.size()) {
++        const std::size_t slash = path.find('/', at);
++        const std::string part = path.substr(at, slash == std::string::npos ? std::string::npos : slash - at);
++        if (!part.empty()) parts.push_back(part);
++        if (slash == std::string::npos) break;
++        at = slash + 1;
++    }
++    last = parts.empty() ? std::string() : parts.back();
++    for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
++        const int index = find(dir, parts[i]);
++        if (index < 0) return kNoEntry;
++        const std::uint8_t *e = entry(dir.cluster, static_cast<std::uint32_t>(index), false);
++        if (!(u16(e + kMode) & kSubdir)) return kNoEntry;
++        dir = dir_of(dir.cluster, static_cast<std::uint32_t>(index));
++    }
++    return kOk;
++}
++
++// A place for a new entry: the first deleted one, else one past the end (adding a cluster if needed).
++int Card::add_entry(const Dir &d, std::uint32_t &index) {
++    const std::uint32_t n = dir_length(d);
++    for (std::uint32_t i = 0; i < n; ++i) {
++        const std::uint8_t *e = entry(d.cluster, i, false);
++        if (e && !(u16(e + kMode) & kExists)) {
++            index = i;
++            return kOk;
++        }
++    }
++    if (!entry(d.cluster, n, true)) return kFull;
++    set_dir_length(d, n + 1);
++    index = n;
++    return kOk;
++}
++
++int Card::format(const Time &now) {
++    std::fill(image_.begin(), image_.end(), 0xFF);
++    cache_.clear();
++    dirty_blocks_.clear();
++    files = {};
++    // An 8 MB card with no bad blocks, as MCMAN formats it.
++    constexpr std::uint32_t kClustersPerCard = 8192, kIfc = 8, kFirstFat = 9, kFatClusters = 32, kAllocOffset = 41;
++    constexpr std::uint32_t kAllocEnd = 8135, kMaxAlloc = 8001;
++    std::uint8_t *sb = change(0).data();
++    std::memset(sb, 0, kPageData);
++    std::memcpy(sb, "Sony PS2 Memory Card Format 1.2.0.0", 35);
++    put16(sb + 0x28, kPageData);
++    put16(sb + 0x2A, kPagesPerCluster);
++    put16(sb + 0x2C, kPagesPerBlock);
++    put16(sb + 0x2E, 0xFF00);
++    put32(sb + 0x30, kClustersPerCard);
++    put32(sb + 0x34, kAllocOffset);
++    put32(sb + 0x38, kAllocEnd);
++    put32(sb + 0x3C, 0);
++    put32(sb + 0x40, 1023);
++    put32(sb + 0x44, 1022);
++    put32(sb + 0x50, kIfc);
++    std::memset(sb + 0xD0, 0xFF, 0x80);  // no bad blocks
++    sb[0x150] = 2;                        // a PS2 card
++    sb[0x151] = 0x2B;
++    put32(sb + 0x154, kClusterBytes);
++    put32(sb + 0x158, kEntriesPerFatCluster);
++    put32(sb + 0x15C, kPagesPerBlock / kPagesPerCluster);
++    put32(sb + 0x160, kEnd);
++    put32(sb + 0x170, kMaxAlloc);
++    put32(sb + 0x17C, kEnd);
++    std::memset(sb + 0x184, 0xFF, kPageData - 0x184);
++    std::uint8_t *ifc = change(kIfc).data();
++    for (std::uint32_t i = 0; i < kFatClusters; ++i) put32(ifc + 4 * i, kFirstFat + i);
++    for (std::uint32_t c = 0; c < kFatClusters; ++c) {
++        std::uint8_t *t = change(kFirstFat + c).data();
++        for (std::uint32_t i = 0; i < kEntriesPerFatCluster; ++i) put32(t + 4 * i, c * kEntriesPerFatCluster + i < kAllocEnd ? kFree : kEnd);
++    }
++    g_ = geometry();
++    set_fat(0, kEnd);
++    std::uint8_t *root = change(kAllocOffset).data();
++    make_entry(root, kDirMode, 2, 0, 0, now, ".");
++    make_entry(root + kEntryBytes, kExists | kHidden | kPs2 | kSubdir | 0x6, 0, 0, 0, now, "..");
++    return kOk;
++}
++
++int Card::open(const std::string &path, int flags, const Time &now) {
++    if (!formatted()) return kNoFormat;
++    g_ = geometry();
++    Dir dir;
++    std::string name;
++    if (const int r = resolve_dir(path, dir, name); r < 0) return r;
++    if (name.empty()) return kNoEntry;
++    int index = find(dir, name);
++    if (flags & kCreateDir) {
++        if (index >= 0) return kDenied;
++        std::uint32_t at;
++        if (const int r = add_entry(dir, at); r < 0) return r;
++        const std::uint32_t c = allocate();
++        if (c == kEnd) return kFull;
++        make_entry(entry(dir.cluster, at, true), kDirMode, 2, c, 0, now, name);
++        const std::uint8_t *self = entry(dir.cluster, 0, false);
++        const std::uint32_t up_cluster = u32(self + kCluster), up_entry = u32(self + kDirEntry);
++        std::uint8_t *inside = change(c + g_.alloc_offset).data();
++        make_entry(inside, kDirMode, 0, dir.cluster, at, now, ".");
++        make_entry(inside + kEntryBytes, kDirMode, 0, up_cluster, up_entry, now, "..");
++        // ".." takes the dates of the entry it stands for, as they were before this change.
++        if (const std::uint8_t *up = entry(up_cluster, up_entry, false)) {
++            std::memcpy(inside + kEntryBytes + kCreated, up + kCreated, 8);
++            std::memcpy(inside + kEntryBytes + kModified, up + kModified, 8);
++        }
++        if (std::uint8_t *h = entry(dir.holder_cluster, dir.holder_index, true)) std::memcpy(h + kModified, now.data(), 8);
++        return kOk;
++    }
++    int fd = -1;
++    for (int i = 0; i < kMaxFiles; ++i)
++        if (!files[i].used) { fd = i; break; }
++    if (fd < 0) return kTooManyOpen;
++    if (index < 0) {
++        if (!(flags & kCreate)) return kNoEntry;
++        std::uint32_t at;
++        if (const int r = add_entry(dir, at); r < 0) return r;
++        make_entry(entry(dir.cluster, at, true), kNewFileMode, 0, kEnd, 0, now, name);
++        if (std::uint8_t *h = entry(dir.holder_cluster, dir.holder_index, true)) std::memcpy(h + kModified, now.data(), 8);
++        index = static_cast<int>(at);
++    } else if (flags & kCreate) {
++        std::uint8_t *e = entry(dir.cluster, static_cast<std::uint32_t>(index), true);
++        if (u16(e + kMode) & kSubdir) return kDenied;
++        std::memcpy(e + kCreated, now.data(), 8);
++    }
++    const std::uint8_t *e = entry(dir.cluster, static_cast<std::uint32_t>(index), false);
++    if (u16(e + kMode) & kSubdir) return kDenied;
++    File &f = files[fd];
++    f = File{};
++    f.used = 1;
++    f.writing = (flags & kWrite) ? 1 : 0;
++    f.dir_cluster = dir.cluster;
++    f.index = static_cast<std::uint32_t>(index);
++    f.cluster = u32(e + kCluster);
++    f.length = u32(e + kLength);
++    return fd;
++}
++
++int Card::close(int fd, const Time &now) {
++    if (fd < 0 || fd >= kMaxFiles || !files[fd].used) return kNoEntry;
++    g_ = geometry();
++    File &f = files[fd];
++    if (f.written) {
++        std::uint8_t *e = entry(f.dir_cluster, f.index, true);
++        put32(e + kLength, f.length);
++        put16(e + kMode, u16(e + kMode) | kClosed);
++        std::memcpy(e + kModified, now.data(), 8);
++        // The directory's own entry is dated too.
++        const std::uint8_t *self = entry(f.dir_cluster, 0, false);
++        if (std::uint8_t *h = entry(u32(self + kCluster), u32(self + kDirEntry), true)) std::memcpy(h + kModified, now.data(), 8);
++    }
++    f = File{};
++    return kOk;
++}
++
++int Card::read(int fd, std::uint8_t *out, std::uint32_t size) {
++    if (fd < 0 || fd >= kMaxFiles || !files[fd].used) return kNoEntry;
++    g_ = geometry();
++    File &f = files[fd];
++    std::uint32_t done = 0;
++    while (done < size && f.position < f.length) {
++        const std::uint32_t c = chain_at(f.cluster, f.position / kClusterBytes, false);
++        if (c == kEnd) break;
++        const std::uint32_t offset = f.position % kClusterBytes;
++        const std::uint32_t n = std::min({size - done, kClusterBytes - offset, f.length - f.position});
++        std::memcpy(out + done, cluster(c + g_.alloc_offset).data() + offset, n);
++        done += n;
++        f.position += n;
++    }
++    return static_cast<int>(done);
++}
++
++int Card::write(int fd, const std::uint8_t *in, std::uint32_t size) {
++    if (fd < 0 || fd >= kMaxFiles || !files[fd].used) return kNoEntry;
++    g_ = geometry();
++    File &f = files[fd];
++    if (!f.writing) return kDenied;
++    std::uint32_t done = 0;
++    while (done < size) {
++        if (f.cluster == kEnd) {
++            const std::uint32_t c = allocate();
++            if (c == kEnd) break;
++            f.cluster = c;
++            put32(entry(f.dir_cluster, f.index, true) + kCluster, c);
++        }
++        const std::uint32_t c = chain_at(f.cluster, f.position / kClusterBytes, true);
++        if (c == kEnd) break;
++        const std::uint32_t offset = f.position % kClusterBytes;
++        const std::uint32_t n = std::min(size - done, kClusterBytes - offset);
++        std::memcpy(change(c + g_.alloc_offset).data() + offset, in + done, n);
++        done += n;
++        f.position += n;
++        f.length = std::max(f.length, f.position);
++        f.written = 1;
++    }
++    return done || !size ? static_cast<int>(done) : kFull;
++}
++
++int Card::seek(int fd, std::int32_t offset, int origin) {
++    if (fd < 0 || fd >= kMaxFiles || !files[fd].used) return kNoEntry;
++    File &f = files[fd];
++    const std::int64_t base = origin == 1 ? f.position : origin == 2 ? f.length : 0;
++    const std::int64_t at = std::max<std::int64_t>(0, base + offset);
++    f.position = static_cast<std::uint32_t>(at);
++    return static_cast<int>(f.position);
++}
++
++int Card::flush(int fd) {
++    if (fd < 0 || fd >= kMaxFiles || !files[fd].used) return kNoEntry;
++    return kOk;
++}
++
++int Card::remove(const std::string &path) {
++    if (!formatted()) return kNoFormat;
++    g_ = geometry();
++    Dir dir;
++    std::string name;
++    if (const int r = resolve_dir(path, dir, name); r < 0) return r;
++    const int index = find(dir, name);
++    if (index < 0) return kNoEntry;
++    std::uint8_t *e = entry(dir.cluster, static_cast<std::uint32_t>(index), false);
++    if (u16(e + kMode) & kSubdir) {
++        const Dir inside = dir_of(dir.cluster, static_cast<std::uint32_t>(index));
++        const std::uint32_t n = dir_length(inside);
++        for (std::uint32_t i = 2; i < n; ++i) {
++            const std::uint8_t *x = entry(inside.cluster, i, false);
++            if (x && (u16(x + kMode) & kExists)) return kNotEmpty;
++        }
++        e = entry(dir.cluster, static_cast<std::uint32_t>(index), false);
++    }
++    for (const File &f : files)
++        if (f.used && f.dir_cluster == dir.cluster && f.index == static_cast<std::uint32_t>(index)) return kDenied;
++    // Freed clusters keep their links; only the "used" bit goes.
++    for (std::uint32_t c = u32(e + kCluster); c != kEnd && c < g_.max_alloc;) {
++        const std::uint32_t next = fat(c);
++        if (!(next & kUsed)) break;
++        set_fat(c, next & ~kUsed);
++        c = next == kEnd ? kEnd : next & ~kUsed;
++    }
++    e = entry(dir.cluster, static_cast<std::uint32_t>(index), true);
++    put16(e + kMode, u16(e + kMode) & ~kExists);
++    return kOk;
++}
++
++int Card::list(const std::string &path, int max, std::vector<Listing> &out) {
++    out.clear();
++    if (!formatted()) return kNoFormat;
++    g_ = geometry();
++    Dir dir;
++    std::string pattern;
++    if (const int r = resolve_dir(path, dir, pattern); r < 0) return r;
++    const bool wild = pattern.find_first_of("*?") != std::string::npos;
++    const std::uint32_t n = dir_length(dir);
++    for (std::uint32_t i = 0; i < n && static_cast<int>(out.size()) < max; ++i) {
++        const std::uint8_t *e = entry(dir.cluster, i, false);
++        if (!e || !(u16(e + kMode) & kExists)) continue;
++        const std::string name = name_of(e);
++        if (wild ? !matches(pattern.c_str(), name.c_str()) : name != pattern) continue;
++        Listing l{};
++        // "." and ".." show the dates of the entry they stand for (the directory's own entry, and its
++        // parent's); a directory shows a size of 0.
++        const std::uint8_t *dated = e;
++        if (i < 2 && (name == "." || name == ".."))
++            if (const std::uint8_t *target = entry(u32(e + kCluster), u32(e + kDirEntry), false)) dated = target;
++        std::memcpy(l.data() + 0, dated + kCreated, 8);
++        std::memcpy(l.data() + 8, dated + kModified, 8);
++        if (!(u16(e + kMode) & kSubdir)) std::memcpy(l.data() + 16, e + kLength, 4);
++        std::memcpy(l.data() + 20, e + kMode, 2);
++        std::memcpy(l.data() + 22, e + 2, 2);
++        std::memcpy(l.data() + 24, e + kAttr, 4);
++        std::memcpy(l.data() + 32, e + kName, kNameBytes);
++        out.push_back(l);
++        if (!wild) break;
++    }
++    return static_cast<int>(out.size());
++}
++
++int Card::entry_space(const std::string &path) {
++    if (!formatted()) return kNoFormat;
++    g_ = geometry();
++    Dir dir;
++    std::string name;
++    if (const int r = resolve_dir(path, dir, name); r < 0) return r;
++    if (!name.empty()) {
++        const int index = find(dir, name);
++        if (index < 0) return kNoEntry;
++        dir = dir_of(dir.cluster, static_cast<std::uint32_t>(index));
++    }
++    const std::uint32_t n = dir_length(dir);
++    std::uint32_t clusters = 0;
++    while (chain_at(dir.cluster, clusters, false) != kEnd) ++clusters;
++    int space = static_cast<int>(clusters * 2) - static_cast<int>(n);
++    for (std::uint32_t i = 0; i < n; ++i) {
++        const std::uint8_t *e = entry(dir.cluster, i, false);
++        if (e && !(u16(e + kMode) & kExists)) ++space;
++    }
++    return std::max(space, 0);
++}
++
++bool Card::commit() {
++    const bool wrote = !dirty_blocks_.empty();
++    for (const std::uint32_t block : dirty_blocks_) {
++        std::uint8_t *at = image_.data() + static_cast<std::size_t>(block) * kPagesPerBlock * kPageBytes;
++        for (std::uint32_t p = 0; p < kPagesPerBlock; ++p) {
++            const std::uint32_t n = block * kPagesPerBlock + p;
++            std::uint8_t *pg = at + p * kPageBytes;
++            if (auto it = cache_.find(n / kPagesPerCluster); it != cache_.end())
++                std::memcpy(pg, it->second.data() + (n % kPagesPerCluster) * kPageData, kPageData);
++            page_ecc(pg, pg + kPageData);
++            std::memset(pg + kPageData + 12, 0, 4);
++        }
++        // As MCMAN writes a block: its new contents go first to the backup block, the block number to the
++        // second backup block, then the block itself, and the second backup block is erased.
++        const Geometry g = geometry();
++        const std::size_t block_bytes = static_cast<std::size_t>(kPagesPerBlock) * kPageBytes;
++        if (g.backup1 < kPages / kPagesPerBlock && g.backup1 != block)
++            std::memcpy(image_.data() + g.backup1 * block_bytes, at, block_bytes);
++        if (g.backup2 < kPages / kPagesPerBlock && g.backup2 != block)
++            std::memset(image_.data() + g.backup2 * block_bytes, 0xFF, block_bytes);
++    }
++    dirty_blocks_.clear();
++    cache_.clear();
++    return wrote;
++}
++
++}
+diff --git a/runtime/src/iop/mcfs.hpp b/runtime/src/iop/mcfs.hpp
+new file mode 100644
+index 0000000..05fbcc5
+--- /dev/null
++++ b/runtime/src/iop/mcfs.hpp
+@@ -0,0 +1,102 @@
++#pragma once
++
++#include <array>
++#include <cstdint>
++#include <map>
++#include <string>
++#include <vector>
++
++// The PS2 memory card file system, as the console's memory card driver (MCMAN) keeps it, on an image of
++// the card's flash in PCSX2's .ps2 layout: 16,384 pages of 512 data bytes and 16 spare bytes (error
++// correction for each 128 bytes, then 4 zero bytes). It reads and writes the card the way MCMAN does, so
++// that a card it writes is byte for byte the card MCMAN writes: clusters of two pages, allocation of the
++// lowest free cluster, directory entries of 512 bytes, and each change written as whole erase blocks of
++// 16 pages, the last one also copied to the card's backup block. Its geometry (allocation offset, FAT,
++// backup blocks) comes from the card's superblock, so a card formatted elsewhere is used as it is.
++namespace ps2::iop::mcfs {
++
++constexpr std::uint32_t kPageData = 512, kPageSpare = 16, kPageBytes = kPageData + kPageSpare;
++constexpr std::uint32_t kPages = 0x4000, kPagesPerCluster = 2, kPagesPerBlock = 16;
++constexpr std::uint32_t kClusterBytes = kPageData * kPagesPerCluster, kEntryBytes = 512;
++constexpr std::size_t kImageBytes = static_cast<std::size_t>(kPageBytes) * kPages;
++
++// Results, as MCMAN returns them.
++constexpr int kOk = 0, kNoFormat = -2, kFull = -3, kNoEntry = -4, kDenied = -5, kNotEmpty = -6, kTooManyOpen = -7;
++
++// Open flags.
++constexpr int kRead = 1, kWrite = 2, kCreateDir = 0x40, kCreate = 0x200;
++
++// A date as the card stores it (sceMcStDateTime): 0, seconds, minutes, hours, day, month, year (16 bits).
++using Time = std::array<std::uint8_t, 8>;
++
++// One entry of a directory listing (sceMcTblGetDir), 64 bytes.
++using Listing = std::array<std::uint8_t, 64>;
++
++// The 12 error-correction bytes of a page's 512 data bytes (3 for each 128).
++void page_ecc(const std::uint8_t *data, std::uint8_t *ecc);
++
++class Card {
++public:
++    explicit Card(std::vector<std::uint8_t> &image) : image_(image) {}
++
++    bool formatted() const;
++    int format(const Time &now);
++    int free_clusters();
++
++    int open(const std::string &path, int flags, const Time &now);
++    int close(int fd, const Time &now);
++    int read(int fd, std::uint8_t *out, std::uint32_t size);
++    int write(int fd, const std::uint8_t *in, std::uint32_t size);
++    int seek(int fd, std::int32_t offset, int origin);
++    int flush(int fd);
++    int remove(const std::string &path);
++    int list(const std::string &path, int max, std::vector<Listing> &out);
++    int entry_space(const std::string &path);
++
++    // Writes every changed erase block to the image. Returns whether anything was written.
++    bool commit();
++
++    // Open files: kept across calls (and in save states).
++    struct File {
++        std::uint8_t used = 0, writing = 0, written = 0, pad = 0;
++        std::uint32_t dir_cluster = 0, index = 0;  // the file's entry: its directory's first cluster, and its place there
++        std::uint32_t cluster = 0, position = 0, length = 0;
++    };
++    static constexpr int kMaxFiles = 3;
++    std::array<File, kMaxFiles> files{};
++
++private:
++    struct Geometry {
++        std::uint32_t alloc_offset = 0, alloc_end = 0, root = 0, backup1 = 0, backup2 = 0, max_alloc = 0, search_from = 0;
++        std::uint32_t ifc[32] = {};
++    };
++    struct Dir {
++        std::uint32_t cluster = 0;            // first cluster (relative to the allocation offset)
++        std::uint32_t holder_cluster = 0;     // the entry holding its length: directory cluster and index
++        std::uint32_t holder_index = 0;
++    };
++    using Cluster = std::array<std::uint8_t, kClusterBytes>;
++
++    Geometry geometry();
++    const std::uint8_t *page(std::uint32_t n) const { return image_.data() + static_cast<std::size_t>(n) * kPageBytes; }
++    Cluster &cluster(std::uint32_t absolute);
++    Cluster &change(std::uint32_t absolute);
++    std::uint32_t fat(std::uint32_t n);
++    void set_fat(std::uint32_t n, std::uint32_t v);
++    std::uint32_t allocate();
++    std::uint32_t chain_at(std::uint32_t first, std::uint32_t steps, bool extend);
++    std::uint8_t *entry(std::uint32_t dir_cluster, std::uint32_t index, bool for_change);
++    std::uint32_t dir_length(const Dir &d);
++    void set_dir_length(const Dir &d, std::uint32_t n);
++    Dir dir_of(std::uint32_t cluster, std::uint32_t index);
++    int resolve_dir(const std::string &path, Dir &dir, std::string &last);
++    int find(const Dir &d, const std::string &name);
++    int add_entry(const Dir &d, std::uint32_t &index);
++
++    std::vector<std::uint8_t> &image_;
++    Geometry g_{};
++    std::map<std::uint32_t, Cluster> cache_;  // clusters read or changed since the last commit (absolute numbers)
++    std::vector<std::uint32_t> dirty_blocks_; // in the order they were first changed
++};
++
++}
+diff --git a/runtime/src/iop/mcserv.cpp b/runtime/src/iop/mcserv.cpp
+new file mode 100644
+index 0000000..04f6636
+--- /dev/null
++++ b/runtime/src/iop/mcserv.cpp
+@@ -0,0 +1,236 @@
++#include "mcserv.hpp"
++
++#include "iop.hpp"
++#include "kernel.hpp"
++#include "mcfs.hpp"
++#include "sif.hpp"
++#include "sio2.hpp"
++
++#include "ps2/memory.hpp"
++#include "ps2/state.hpp"
++#include "ps2/system.hpp"
++
++#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++// A native MCSERV and MCMAN. Each RPC is what MCSERV's handler for it does (base 0x46700 in this game):
++// it unpacks the request into one MCMAN call, moves data between the card and the EE in the same places,
++// and replies with MCMAN's result. MCMAN's part is the file system in mcfs.cpp. Only slot 1 (port 0, slot
++// 0) holds a card; the other port answers as an empty slot.
++namespace ps2::iop::mcserv {
++
++namespace {
++
++constexpr std::uint32_t kMcmanBase = 0x21000, kMcservBase = 0x46700, kMcservEnd = 0x49F00;  // their memory, kept for them
++constexpr std::uint32_t kServer = 0x80000400;
++constexpr std::uint32_t kServerVersion = 0x20F, kDriverVersion = 0x220;  // MCSERV's and MCMAN's, as init reports them
++constexpr int kNoCard = -11, kNotHandled = -1;
++
++bool g_installed = false;
++bool g_seen = false;              // a card has been reported (MCMAN reports a card once as new: formatted or not)
++std::uint32_t g_known_insertion = 0;
++
++mcfs::Card &card() {
++    static mcfs::Card c(sio2::card_image());
++    return c;
++}
++
++std::uint8_t *ee(std::uint32_t a) { return ps2::g_ram + (a & (ps2::kRamSize - 1)); }
++void ee_write(std::uint32_t dst, const void *src, std::uint32_t size) { std::memcpy(ee(dst), src, size); }
++
++// The console clock, as MCMAN dates entries: binary fields, the year from 2000.
++mcfs::Time now() {
++    std::uint8_t clock[8];
++    read_clock(clock);
++    const auto bin = [](std::uint8_t b) { return static_cast<std::uint8_t>((b >> 4) * 10 + (b & 15)); };
++    const std::uint16_t year = static_cast<std::uint16_t>(2000 + bin(clock[7]));
++    return {0, bin(clock[1]), bin(clock[2]), bin(clock[3]), bin(clock[5]), bin(clock[6]), static_cast<std::uint8_t>(year), static_cast<std::uint8_t>(year >> 8)};
++}
++
++bool has_card(std::uint32_t port, std::uint32_t slot) { return port == 0 && slot == 0 && sio2::card_present(); }
++
++// After a call: changed blocks go to the image, and the image to its file once writes stop.
++void commit() {
++    if (card().commit()) sio2::card_written();
++}
++
++// Card info (1): the result says whether the card is new (-1 formatted, -2 not) or the same as last time
++// (0); the info block (0xC0 bytes, to the EE) holds its type, free clusters and whether it is formatted.
++int info(const std::uint32_t *w) {
++    const std::uint32_t port = w[1], slot = w[2];
++    std::uint8_t block[0xC0] = {};
++    int result;
++    if (!has_card(port, slot)) {
++        result = kNoCard;
++    } else {
++        if (w[5]) block[0] = 2;  // a PS2 memory card
++        if (!g_seen || g_known_insertion != sio2::card_insertions()) {
++            g_seen = true;
++            g_known_insertion = sio2::card_insertions();
++            card().files = {};
++            result = card().formatted() ? -1 : -2;
++        } else {
++            result = 0;
++        }
++        if (result >= -1) {
++            if (w[4]) {
++                const std::int32_t free = card().free_clusters();
++                std::memcpy(block + 4, &free, 4);
++            }
++            if (w[3]) block[0x90] = card().formatted() ? 1 : 0;
++        }
++        commit();
++    }
++    ee_write(w[7], block, sizeof block);
++    return result;
++}
++
++// Read (5): the data in place in the EE buffer; the unaligned start and end (up to 64 bytes each) also
++// go in a 0xC0-byte block at the EE's address (their sizes, addresses and bytes), which libmc copies.
++int read(const std::uint32_t *w) {
++    const int fd = static_cast<int>(w[0]);
++    const std::uint32_t size = w[3], buffer = w[6];
++    std::vector<std::uint8_t> data(size);
++    const int got = card().read(fd, data.data(), size);
++    commit();
++    std::uint32_t head = size <= 64 ? size : ((buffer - 1) & ~63u) - (buffer - 64);
++    std::uint32_t middle = size - head;
++    std::uint32_t tail = middle & 63;
++    middle -= tail;
++    std::uint8_t block[0xC0] = {};
++    if (got >= 0) {
++        const std::uint32_t n = static_cast<std::uint32_t>(got);
++        head = std::min(head, n);
++        middle = std::min(middle, n - head);
++        tail = std::min(tail, n - head - middle);
++        for (std::uint32_t at = 0; at < middle; at += 0x2000)  // in MCSERV's pieces
++            ee_write(buffer + head + at, data.data() + head + at, std::min<std::uint32_t>(middle - at, 0x2000));
++        std::memcpy(block + 16, data.data(), head);
++        std::memcpy(block + 80, data.data() + head + middle, tail);
++        std::memcpy(block + 0, &head, 4);
++        std::memcpy(block + 4, &tail, 4);
++        if (head) std::memcpy(block + 8, &buffer, 4);
++        const std::uint32_t tail_at = buffer + head + middle;
++        if (tail) std::memcpy(block + 12, &tail_at, 4);
++    }
++    ee_write(w[7], block, sizeof block);
++    return got;
++}
++
++// Write (6): the first bytes (up to 16, to reach an aligned address) come in the request, the rest from
++// the EE buffer.
++int write(const std::uint32_t *w, const std::uint8_t *request) {
++    const int fd = static_cast<int>(w[0]);
++    const std::uint32_t head = std::min<std::uint32_t>(w[5], 16), size = w[3];
++    std::vector<std::uint8_t> data(head + size);
++    std::memcpy(data.data(), request + 32, head);
++    std::memcpy(data.data() + head, ee(w[6]), size);
++    const int r = card().write(fd, data.data(), static_cast<std::uint32_t>(data.size()));
++    commit();
++    return r;
++}
++
++// Directory listing (13): up to w[3] entries of 64 bytes, to the EE table at w[4].
++int list(const std::uint32_t *w, const std::string &path) {
++    if (!has_card(w[0], w[1])) return kNoCard;
++    const int max = static_cast<std::int32_t>(w[3]);
++    std::vector<mcfs::Listing> out;
++    const int n = card().list(path, max < 0 ? 0x7FFFFFFF : max, out);
++    commit();
++    if (max >= 0)
++        for (std::size_t i = 0; i < out.size(); ++i) ee_write(w[4] + static_cast<std::uint32_t>(i) * 64, out[i].data(), 64);
++    return n;
++}
++
++bool rpc(std::uint32_t method, std::uint32_t args, std::uint32_t args_size, std::uint32_t ret, std::uint32_t ret_size) {
++    std::uint8_t request[1044] = {};
++    std::memcpy(request, ee(args), std::min<std::uint32_t>(args_size, sizeof request));
++    std::uint32_t w[8];
++    std::memcpy(w, request, sizeof w);
++    const std::string path(reinterpret_cast<const char *>(request + 20), strnlen(reinterpret_cast<const char *>(request + 20), 1023));
++    std::int32_t reply[3] = {0, 0, 0};
++    std::int32_t &r = reply[0];
++    switch (method) {
++    case 254:  // init
++        reply[1] = kServerVersion;
++        reply[2] = kDriverVersion;
++        break;
++    case 1: r = info(w); break;
++    case 2:  // open (also makes directories)
++        r = has_card(w[0], w[1]) ? card().open(path, static_cast<int>(w[2]), now()) : kNoCard;
++        commit();
++        break;
++    case 3: r = card().close(static_cast<int>(w[0]), now()); commit(); break;
++    case 4: r = card().seek(static_cast<int>(w[0]), static_cast<std::int32_t>(w[4]), static_cast<int>(w[5])); break;
++    case 5: r = read(w); break;
++    case 6: r = write(w, request); break;
++    case 10: r = card().flush(static_cast<int>(w[0])); break;
++    case 13: r = list(w, path); break;
++    case 15:  // delete
++        r = has_card(w[0], w[1]) ? card().remove(path) : kNoCard;
++        commit();
++        break;
++    case 16:  // format
++        r = has_card(w[1], w[2]) ? card().format(now()) : kNoCard;
++        commit();
++        break;
++    case 18:  // free directory entries
++        r = has_card(w[0], w[1]) ? card().entry_space(path) : kNoCard;
++        commit();
++        break;
++    case 20: break;  // thread priority
++    default:
++        std::fprintf(stderr, "[mcserv] RPC %u not handled\n", method);
++        r = kNotHandled;
++        break;
++    }
++    std::memcpy(ee(ret), reply, std::min<std::uint32_t>(ret_size, sizeof reply));
++    return true;
++}
++
++}  // namespace
++
++// On unless PS2_NATIVE_MC=0, which runs the game's own MCMAN.IRX and MCSERV.IRX translated instead (for
++// comparing the two). A save state keeps whichever drivers it was saved with.
++bool enabled() {
++    static const bool on = [] {
++        const char *v = std::getenv("PS2_NATIVE_MC");
++        return !v || v[0] != '0';
++    }();
++    return on;
++}
++
++void install() {
++    if (!enabled()) return;
++    kernel::register_hle_module("MCMAN", [] {
++        if (!kernel::alloc(kMcservBase - kMcmanBase, 2, kMcmanBase)) std::fprintf(stderr, "[mcserv] could not keep 0x%X..0x%X\n", kMcmanBase, kMcservBase);
++        std::memset(ram_ptr(kMcmanBase), 0, kMcservBase - kMcmanBase);
++    });
++    kernel::register_hle_module("MCSERV", [] {
++        if (!kernel::alloc(kMcservEnd - kMcservBase, 2, kMcservBase)) std::fprintf(stderr, "[mcserv] could not keep 0x%X..0x%X\n", kMcservBase, kMcservEnd);
++        std::memset(ram_ptr(kMcservBase), 0, kMcservEnd - kMcservBase);
++        g_installed = true;
++        g_seen = false;
++        card().files = {};
++        sif::register_hle_server(kServer, rpc);
++        std::fprintf(stderr, "[mcserv] native\n");
++    });
++}
++
++void state(ps2::state::Stream &s) {
++    s.tag("mcserv");
++    s.pod(g_installed);
++    s.pod(g_seen);
++    s.pod(card().files);
++    if (s.loading()) {
++        // The card in the slot is taken as the one the state saw (MCMAN would know it from its own memory).
++        g_known_insertion = sio2::card_insertions();
++        if (g_installed) sif::register_hle_server(kServer, rpc);
++    }
++}
++
++}
+diff --git a/runtime/src/iop/mcserv.hpp b/runtime/src/iop/mcserv.hpp
+new file mode 100644
+index 0000000..d03a124
+--- /dev/null
++++ b/runtime/src/iop/mcserv.hpp
+@@ -0,0 +1,19 @@
++#pragma once
++
++namespace ps2::state {
++class Stream;
++}
++
++namespace ps2::iop::mcserv {
++
++// The game's memory card drivers (MCMAN.IRX and MCSERV.IRX) in native code, in place of their translated
++// modules: the libmc RPC server (0x80000400) answering each call the game makes, on the card in slot 1
++// through the native file system (mcfs.cpp), which writes the card as MCMAN does. Installed when the game
++// loads the modules (unless PS2_NATIVE_MC=0); their memory is kept so the modules after them load where
++// they always do. Checked against the translated modules: boot, saving over a save, a new save, and
++// formatting a blank card then saving, card images compared byte for byte.
++void install();
++bool enabled();
++void state(ps2::state::Stream &s);
++
++}
 diff --git a/runtime/src/iop/padman.cpp b/runtime/src/iop/padman.cpp
 new file mode 100644
 index 0000000..aae7e2b
@@ -5281,18 +6310,19 @@ index 0000000..2bcbee5
 +
 +}
 diff --git a/runtime/src/iop/sif.cpp b/runtime/src/iop/sif.cpp
-index 710e6b3..11b2b2a 100644
+index 710e6b3..d1503fd 100644
 --- a/runtime/src/iop/sif.cpp
 +++ b/runtime/src/iop/sif.cpp
-@@ -1,5 +1,7 @@
+@@ -1,5 +1,8 @@
  #include "sif.hpp"
  
++#include "mcserv.hpp"
 +#include "padman.hpp"
 +
  #include "../hw.hpp"
  #include "iop.hpp"
  #include "io.hpp"
-@@ -152,6 +154,31 @@ void call(const std::uint8_t *packet) {
+@@ -152,6 +155,31 @@ void call(const std::uint8_t *packet) {
      Call c;
      std::memcpy(&c, packet, sizeof c);
      const std::uint32_t server = c.server_data ^ kServerXor;
@@ -5324,7 +6354,7 @@ index 710e6b3..11b2b2a 100644
      auto it = g_servers.find(server);
      if (it == g_servers.end()) {
          std::fprintf(stderr, "[sif] call %u to unknown server 0x%08X\n", c.rpc_number, server);
-@@ -770,6 +797,32 @@ std::uint32_t set_dma(std::uint32_t transfers, std::uint32_t count) {
+@@ -770,6 +798,32 @@ std::uint32_t set_dma(std::uint32_t transfers, std::uint32_t count) {
              // carries the rest of its last quadword. Sound drivers keep a ready flag there.
              const std::uint32_t moved = std::min({(size + 15u) & ~15u, iop::kRamSize - (iop::phys(dst) & (iop::kRamSize - 1)), kRamSize - src});
              std::memcpy(iop::ram_ptr(dst), g_ram + src, moved);
@@ -5357,16 +6387,17 @@ index 710e6b3..11b2b2a 100644
          }
      }
      g_ee_dma_done = std::max(g_ee_dma_done, now()) + 256u + bytes * 2u;
-@@ -854,6 +907,7 @@ void install_sif() {
+@@ -854,6 +908,8 @@ void install_sif() {
      sif::install_iop_side();
      sif::install_servers();
      install_cdvdfsv();
 +    padman::install();
++    mcserv::install();
  }
  
  }
 diff --git a/runtime/src/iop/sio2.cpp b/runtime/src/iop/sio2.cpp
-index aff8342..b82a49e 100644
+index aff8342..0b9e687 100644
 --- a/runtime/src/iop/sio2.cpp
 +++ b/runtime/src/iop/sio2.cpp
 @@ -21,66 +21,18 @@ namespace {
@@ -5419,10 +6450,10 @@ index aff8342..b82a49e 100644
 -Feel g_feel[2];
 -Card g_card;
 -Dma g_dma[2];
--
--void no_device() { g_stat |= 0xC000u | (0x10000u << (g_index & 15u)); }
 +}  // namespace
  
+-void no_device() { g_stat |= 0xC000u | (0x10000u << (g_index & 15u)); }
+-
 -void controller(int port, std::size_t at, std::uint32_t out_size) {
 -    const std::vector<std::uint8_t> in(g_in.begin(), g_in.end());
 -    if (port > 1 || !g_pads[port].connected || in.empty() || in[0] != 0x01) {
@@ -5443,7 +6474,7 @@ index aff8342..b82a49e 100644
      };
      put(0, 0xFF);
      put(1, p.config ? kConfig : p.mode);
-@@ -164,6 +116,50 @@ void controller(int port, std::size_t at, std::uint32_t out_size) {
+@@ -164,6 +116,51 @@ void controller(int port, std::size_t at, std::uint32_t out_size) {
          data();
          break;
      }
@@ -5467,6 +6498,7 @@ index aff8342..b82a49e 100644
 +    std::uint8_t term = 0x55;
 +    bool dirty = false;
 +    std::uint32_t quiet = 0;
++    std::uint32_t insertions = 0;
 +};
 +
 +std::uint32_t g_send3[16];
@@ -5494,7 +6526,31 @@ index aff8342..b82a49e 100644
  }
  
  std::uint8_t xor_of(const std::uint8_t *p, std::size_t n) {
-@@ -417,6 +413,9 @@ void set_connected(int pad, bool connected) {
+@@ -178,6 +175,7 @@ void load_card() {
+     std::ifstream in(g_options.memcard_path, std::ios::binary);
+     if (in) in.read(reinterpret_cast<char *>(g_card.data.data()), static_cast<std::streamsize>(kCardBytes));
+     g_card.present = true;
++    ++g_card.insertions;
+     std::fprintf(stderr, "[mc] card in slot 1: %s%s\n", g_options.memcard_path.c_str(), in ? "" : " (new, unformatted)");
+ }
+ 
+@@ -330,6 +328,15 @@ void reset() {
+     load_card();
+ }
+ 
++bool card_present() { return g_card.present; }
++std::vector<std::uint8_t> &card_image() { return g_card.data; }
++std::uint32_t card_insertions() { return g_card.insertions; }
++
++void card_written() {
++    g_card.dirty = true;
++    g_card.quiet = 0;
++}
++
+ void flush_cards() {
+     Card &c = g_card;
+     if (!c.dirty || ++c.quiet < 50) return;
+@@ -417,6 +424,9 @@ void set_connected(int pad, bool connected) {
  
  std::uint16_t rumble(int pad) { return pad >= 0 && pad < 2 ? g_feel[pad].rumble.load(std::memory_order_relaxed) : 0; }
  
@@ -5505,18 +6561,20 @@ index aff8342..b82a49e 100644
  
  namespace ps2::iop::sio2 {
 diff --git a/runtime/src/iop/sio2.hpp b/runtime/src/iop/sio2.hpp
-index 1068dad..0f058cb 100644
+index 1068dad..a61073c 100644
 --- a/runtime/src/iop/sio2.hpp
 +++ b/runtime/src/iop/sio2.hpp
-@@ -1,5 +1,7 @@
+@@ -1,6 +1,9 @@
  #pragma once
  
 +#include <atomic>
 +#include <cstddef>
  #include <cstdint>
++#include <vector>
  
  namespace ps2::state {
-@@ -8,6 +10,33 @@ class Stream;
+ class Stream;
+@@ -8,6 +11,33 @@ class Stream;
  
  namespace ps2::iop::sio2 {
  
@@ -5550,6 +6608,21 @@ index 1068dad..0f058cb 100644
  void state(ps2::state::Stream &s);
  
  void reset();
+@@ -21,4 +51,14 @@ void set_connected(int pad, bool connected);
+ std::uint16_t rumble(int pad);
+ void flush_cards();
+ 
++// The memory card in slot 1 (port 0): an image of its flash, in PCSX2's .ps2 layout, loaded from its file
++// and saved back to it once writes stop. SIO2 serves it to the translated memory card driver; the native
++// driver (mcserv.cpp) works on the same image.
++bool card_present();
++std::vector<std::uint8_t> &card_image();
++// Counts each time a card goes in, so that a driver can tell a card that was swapped.
++std::uint32_t card_insertions();
++// The image was changed: it is saved to the card's file once writes stop.
++void card_written();
++
+ }
 diff --git a/runtime/src/iop/spu2.cpp b/runtime/src/iop/spu2.cpp
 index 913db60..c0898fb 100644
 --- a/runtime/src/iop/spu2.cpp
@@ -6009,7 +7082,7 @@ index 7a0699c..3b48d93 100644
              g_watch_on = true;
              std::fprintf(stderr, "[watch] writes to 0x%08X..0x%08X will print\n", g_watch_base, g_watch_end);
 diff --git a/runtime/src/system.cpp b/runtime/src/system.cpp
-index 86f8ca9..f4d78c2 100644
+index 86f8ca9..d215cb3 100644
 --- a/runtime/src/system.cpp
 +++ b/runtime/src/system.cpp
 @@ -15,6 +15,7 @@
@@ -6077,7 +7150,7 @@ index 86f8ca9..f4d78c2 100644
  
  constexpr char kStateMagic[8] = {'P', 'S', '2', 'S', 'T', 'A', 'T', 'E'};
 -constexpr std::uint32_t kStateVersion = 6;
-+constexpr std::uint32_t kStateVersion = 8;
++constexpr std::uint32_t kStateVersion = 9;
  
  std::function<void()> event_action(int id, std::uint64_t at) {
      if (id == hw::kEventVblank) return vblank;
@@ -6453,4 +7526,161 @@ index 0000000..e085f44
 +    labels();
 +    if (!g_failures) std::printf("graphics settings: all checks passed\n");
 +    return g_failures ? 1 : 0;
++}
+diff --git a/tests/mcfs_test.cpp b/tests/mcfs_test.cpp
+new file mode 100644
+index 0000000..6fb767c
+--- /dev/null
++++ b/tests/mcfs_test.cpp
+@@ -0,0 +1,151 @@
++// Tests the native memory card file system (runtime/src/iop/mcfs.cpp) on a card image in memory: run the
++// built mcfs_test; it exits 0 when every check passes and prints each failure otherwise. (The card the
++// game writes through it is compared with the one MCMAN writes by running the game: see ROADMAP.md.)
++#include "iop/mcfs.hpp"
++
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++
++using namespace ps2::iop::mcfs;
++
++namespace {
++
++int g_failures = 0;
++
++void check(bool ok, const char *what) {
++    if (ok) return;
++    std::fprintf(stderr, "FAIL: %s\n", what);
++    ++g_failures;
++}
++
++std::uint32_t u32(const std::vector<std::uint8_t> &image, std::size_t at) {
++    std::uint32_t v;
++    std::memcpy(&v, image.data() + at, 4);
++    return v;
++}
++
++const std::uint8_t *page(const std::vector<std::uint8_t> &image, std::uint32_t n) { return image.data() + static_cast<std::size_t>(n) * kPageBytes; }
++
++// FAT entry n of a freshly formatted card: FAT clusters 9.. sit at pages 18..
++std::uint32_t fat(const std::vector<std::uint8_t> &image, std::uint32_t n) {
++    const std::uint32_t cluster = 9 + n / 256, offset = (n % 256) * 4;
++    return u32(image, static_cast<std::size_t>(cluster * 2 + offset / 512) * kPageBytes + offset % 512);
++}
++
++const Time kNow = {0, 44, 4, 21, 8, 11, 0xEA, 0x07};  // 21:04:44, 8 November 2026
++
++void ecc() {
++    std::uint8_t ff[512], out[12];
++    std::memset(ff, 0xFF, sizeof ff);
++    page_ecc(ff, out);
++    const std::uint8_t expected[12] = {0x77, 0x7F, 0x7F, 0x77, 0x7F, 0x7F, 0x77, 0x7F, 0x7F, 0x77, 0x7F, 0x7F};
++    check(std::memcmp(out, expected, 12) == 0, "error correction of an erased page");
++    std::uint8_t one[512] = {};
++    one[0] = 1;
++    page_ecc(one, out);
++    // A single 1 bit in byte 0: column parity of bit 0, line parity of index 0.
++    check(out[0] == (0x77 ^ 0x07) && out[1] == 0 && out[2] == 0x7F, "error correction of one set bit");
++}
++
++void format_blank() {
++    std::vector<std::uint8_t> image(kImageBytes, 0xFF);
++    Card card(image);
++    check(!card.formatted(), "a blank card is not formatted");
++    check(card.format(kNow) == kOk, "format succeeds");
++    card.commit();
++    check(card.formatted(), "formatted after format");
++    check(std::memcmp(page(image, 0), "Sony PS2 Memory Card Format 1.2.0.0", 35) == 0, "superblock magic and version");
++    check(u32(image, 0x34) == 41 && u32(image, 0x38) == 8135 && u32(image, 0x170) == 8001, "superblock geometry");
++    check(u32(image, 0x50) == 8 && u32(image, 16 * kPageBytes) == 9 && u32(image, 16 * kPageBytes + 31 * 4) == 40, "indirect FAT list");
++    check(fat(image, 0) == 0xFFFFFFFFu && fat(image, 1) == 0x7FFFFFFFu && fat(image, 8134) == 0x7FFFFFFFu && fat(image, 8135) == 0xFFFFFFFFu,
++          "FAT after format");
++    check(card.free_clusters() == 8000, "8000 free clusters after format");
++    // Blocks 0 to 5 written in full (each page with its error correction), the rest erased.
++    std::uint8_t ecc[12];
++    page_ecc(page(image, 85), ecc);
++    check(std::memcmp(page(image, 85) + 512, ecc, 12) == 0 && page(image, 85)[524] == 0, "unused page of a written block carries its ECC");
++    check(page(image, 96)[512] == 0xFF, "pages of unwritten blocks stay erased");
++    std::vector<Listing> list;
++    check(card.list("/*", 24, list) == 2 && std::strcmp(reinterpret_cast<const char *>(list[0].data() + 32), ".") == 0,
++          "the root lists . and ..");
++    check(card.entry_space("/") == 0, "no free entries in a new root");
++}
++
++void save_and_load() {
++    std::vector<std::uint8_t> image(kImageBytes, 0xFF);
++    Card card(image);
++    card.format(kNow);
++    card.commit();
++    const Time kLater = {0, 45, 4, 21, 8, 11, 0xEA, 0x07};
++    check(card.open("/SAVE", kCreateDir, kLater) == kOk, "make a directory");
++    card.commit();
++    {
++        // Its ".." carries the root's dates (from the format), its "." the time it was made.
++        const std::uint8_t *dot = page(image, (41 + 2) * 2), *dotdot = page(image, (41 + 2) * 2 + 1);
++        check(dot[9] == 45 && dotdot[9] == 44 && dotdot[25] == 44, "dates of a new directory's . and ..");
++    }
++    check(card.entry_space("/") == 1, "one free entry after the directory");
++    std::vector<std::uint8_t> data(3000);
++    for (std::size_t i = 0; i < data.size(); ++i) data[i] = static_cast<std::uint8_t>(i * 7);
++    const int fd = card.open("/SAVE/file", kCreate | kWrite, kNow);
++    check(fd == 0, "create a file");
++    check(card.write(fd, data.data(), static_cast<std::uint32_t>(data.size())) == 3000, "write 3000 bytes");
++    check(card.close(fd, kNow) == kOk, "close");
++    card.commit();
++    // Root grew by cluster 1, the directory took 2, its third entry 3, the file 4 to 6.
++    check(fat(image, 0) == 0x80000001u && fat(image, 2) == 0x80000003u && fat(image, 4) == 0x80000005u && fat(image, 6) == 0xFFFFFFFFu,
++          "lowest free clusters, in order");
++    check(card.free_clusters() == 8001 - 7, "free clusters after the save");
++    std::vector<Listing> list;
++    check(card.list("/SAVE/*", 24, list) == 3, "the directory lists 3 entries");
++    check(card.list("/SAVE", 24, list) == 1 && u32(std::vector<std::uint8_t>(list[0].begin(), list[0].end()), 16) == 0, "a directory lists a size of 0");
++    {
++        // "." shows the dates of the directory's own entry (in the root): change that entry's date and look.
++        const Time later = {0, 50, 4, 21, 8, 11, 0xEA, 0x07};
++        const int f = card.open("/SAVE/file", kWrite, later);
++        card.write(f, data.data(), 1);
++        card.close(f, later);  // dates the file, and the directory's own entry
++        card.commit();
++        card.list("/SAVE/*", 24, list);
++        // (byte 9: seconds of the modified date) "." is the directory's entry, dated at the close; ".." the root's ".", dated when the directory was made.
++        check(list[0][9] == 50 && list[1][9] == 45, "the dates of . and .. are those of the entries they stand for");
++    }
++    const int in = card.open("/SAVE/file", kRead, kNow);
++    std::vector<std::uint8_t> back(4000);
++    check(card.read(in, back.data(), 4000) == 3000 && std::memcmp(back.data(), data.data(), 3000) == 0, "read back what was written");
++    card.close(in, kNow);
++    check(card.open("/SAVE/none", kRead, kNow) == kNoEntry, "a missing file");
++    check(card.open("/NONE/file", kRead, kNow) == kNoEntry, "a file in a missing directory");
++    // The backup block holds the last block written, and the second backup block is erased.
++    const std::size_t block = 16 * kPageBytes;
++    bool backup_matches = false;
++    for (std::size_t b = 0; b < 1022 && !backup_matches; ++b)
++        backup_matches = std::memcmp(image.data() + 1023 * block, image.data() + b * block, block) == 0;
++    check(backup_matches && image[1022 * block] == 0xFF, "backup blocks");
++}
++
++void reads_do_not_write() {
++    std::vector<std::uint8_t> image(kImageBytes, 0xFF);
++    Card card(image);
++    card.format(kNow);
++    card.commit();
++    const std::vector<std::uint8_t> before = image;
++    std::vector<Listing> list;
++    card.list("/*", 24, list);
++    card.free_clusters();
++    check(!card.commit() && image == before, "listing and counting change nothing");
++}
++
++}  // namespace
++
++int main() {
++    ecc();
++    format_blank();
++    save_and_load();
++    reads_do_not_write();
++    if (g_failures) return 1;
++    std::printf("mcfs_test: all checks passed\n");
++    return 0;
 +}

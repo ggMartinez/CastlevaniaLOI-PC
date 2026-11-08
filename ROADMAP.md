@@ -15,7 +15,7 @@ Each part's percentage is an estimate of how much of the way to its native goal 
 | # | Part | PS2 hardware | Status | Progress |
 |---|---|---|---|---|
 | — | [Game code](#game-code) | EE CPU, VU1 microcode | Done | 100% |
-| 1 | [Memory card](#1-memory-card) | SIO2, MCMAN/MCSERV.IRX | Later | 40% |
+| 1 | [Memory card](#1-memory-card) | SIO2, MCMAN/MCSERV.IRX | Done | 100% |
 | 2 | [Controller](#2-controller) | SIO2, PADMAN.IRX | Done | 100% |
 | 3 | [Disc drive](#3-disc-drive) | CDVD | Done | 100% |
 | 4 | [Movies](#4-movies) | IPU, `.PSS` files | To do | 0% |
@@ -33,12 +33,36 @@ compiled into `game.dll` on the player's PC.
 
 ## 1. Memory card
 
-**Later, 40%.**
+**Done, 100%.**
 
-- **Today:** the game's memory card drivers (MCMAN/MCSERV.IRX) run as translated native code on the IOP, on a
-  simulated 8 MB card file (`saves\memcard1.ps2`).
-- **Native goal:** replace the game's save and load calls with plain save files.
-- **Notes:** a small gain on its own; worth doing once the IOP goes away.
+- **Today:** the game's memory card drivers, MCMAN.IRX and MCSERV.IRX, are native code:
+  `runtime/src/iop/mcserv.cpp` answers the game's libmc calls (card info, listing, open, read, write,
+  close, format, free entries, delete), and `runtime/src/iop/mcfs.cpp` is the PS2 memory card file
+  system, reading and writing the card file directly. No card is simulated any more, and SIO2 serves
+  nothing in this game.
+- **The card stays PCSX2's:** `saves\memcard1.ps2` keeps PCSX2's own `.ps2` format (8 MB, with the error
+  correction bytes), so a card goes back and forth as it is. The launcher has **Import from PCSX2...**
+  (keeps the current card as `saves\memcard1-<date>.ps2` first) and **Export...**.
+- **How it was made:** MCSERV's RPC handlers read from its code (disassembled), MCMAN's file system from
+  the cards it writes. Checked against the translated drivers from the same starting card and inputs:
+  - saving over a save, a new save in an empty slot, a blank card (format, then the first save), and a
+    card with another game's saves, a deleted file and a deleted folder on it: the cards are identical,
+    byte for byte (error correction and backup block included), and the other game's data untouched;
+  - every call's result and every byte sent to the game: identical, but for the parts of two 192-byte
+    blocks that MCSERV fills from its own stack and the game never reads (written as zeros);
+  - boot, the title's Continue and loading a save: identical, frame for frame;
+  - save states: one made with the native drivers resumes and saves the same card; older ones keep
+    the translated drivers they were saved with.
+- **Notes:**
+  - Saves are faster: a call finishes at once, where MCMAN took frames (formatting took 53). So a save's
+    date can be a second earlier than the translated drivers' for the same inputs; with the clock
+    held still, the cards are identical.
+  - Found on the way: MCMAN reads the date through a clock call the runtime did not have, so every save
+    until now was dated 2000 with garbage hours. Fixed (cards made before keep those dates until saved
+    over), and the clock's day now turns over at midnight Japan time, as the console's does.
+  - `PS2_NATIVE_MC=0` runs the translated drivers instead, for comparison. `PS2_FIXED_CLOCK=<unix
+    seconds>` starts the console clock at a fixed time that advances with the frames, so two runs date
+    their saves alike.
 
 ## 2. Controller
 
@@ -47,7 +71,7 @@ compiled into `game.dll` on the player's PC.
 - **Today:** the game's pad driver, PADMAN.IRX, is native code: `runtime/src/iop/padman.cpp` answers
   the game's libpad calls and, each frame, sends each open port one command to its DualShock and copies
   the 128-byte state block to the game, as PADMAN does. The DualShock itself stays a model of the device
-  in C++ (`sio2.cpp`), as the SPU2 does; SIO2's transfers now serve only the memory card.
+  in C++ (`sio2.cpp`), as the SPU2 does.
 - **How it was made:** from PADMAN's own code (disassembled; its fields, tasks and timing are in
   [docs/superpowers/plans/2026-11-08-native-pad.md](docs/superpowers/plans/2026-11-08-native-pad.md)),
   and checked against the translated module block by block, every byte of every frame:
@@ -103,7 +127,7 @@ compiled into `game.dll` on the player's PC.
 
 1. **Done: the IOP's modules run natively.** `ioprecomp` translates the IOP modules to C++:
    - Konami's sound driver, Sony's sound library, the MIDI sequencer and the disc streamer;
-   - the memory card drivers (the pad driver is native code of its own: see Controller).
+   - (the pad and memory card drivers became native code of their own: see Controller and Memory card).
 
    The build relocates each one to the address it always loads at (`src\config\iop.txt`). Every IOP
    instruction runs translated: measured over 80 million in gameplay and the same at boot, none

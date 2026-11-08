@@ -42,6 +42,60 @@ std::string choose_iso(SDL_Window *) {
     return GetOpenFileNameW(&ofn) ? utf8(file) : std::string{};
 }
 
+// The memory card is one file in PCSX2's own format (an 8 MB card with its error correction bytes), so a
+// card from PCSX2 is used as it is, and this one can go back to PCSX2.
+constexpr std::uintmax_t kCardBytes = 8650752;
+
+fs::path card_path(const Paths &paths) { return paths.saves / "memcard1.ps2"; }
+
+std::wstring card_dialog(bool save, const std::wstring &title) {
+    wchar_t file[MAX_PATH] = L"";
+    if (save) wcscpy_s(file, L"memcard1.ps2");
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = L"PS2 memory card (*.ps2)\0*.ps2\0All files\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = title.c_str();
+    ofn.lpstrDefExt = L"ps2";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    const BOOL ok = save ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn);
+    return ok ? std::wstring(file) : std::wstring{};
+}
+
+// Copies a PCSX2 card in as the game's card, keeping the current one as saves\memcard1-<date and time>.ps2.
+// Returns a message for the player.
+std::string import_card(const Paths &paths) {
+    const std::wstring picked = card_dialog(false, L"Choose a PCSX2 memory card to use");
+    if (picked.empty()) return {};
+    std::error_code ec;
+    const fs::path from(picked);
+    if (fs::file_size(from, ec) != kCardBytes || ec)
+        return "Not imported: " + utf8(from.filename().wstring()) + " is not an 8 MB PS2 memory card in PCSX2's format (8,650,752 bytes).";
+    fs::create_directories(paths.saves, ec);
+    const fs::path card = card_path(paths);
+    std::string kept;
+    if (fs::exists(card, ec)) {
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        wchar_t stamp[32];
+        swprintf_s(stamp, L"memcard1-%04u%02u%02u-%02u%02u%02u.ps2", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+        if (!fs::copy_file(card, paths.saves / stamp, fs::copy_options::overwrite_existing, ec))
+            return "Not imported: could not keep a copy of the current card (" + ec.message() + ").";
+        kept = " The previous card was kept as saves\\" + utf8(stamp) + ".";
+    }
+    if (!fs::copy_file(from, card, fs::copy_options::overwrite_existing, ec)) return "Not imported: " + ec.message();
+    return "Imported " + utf8(from.filename().wstring()) + "." + kept;
+}
+
+std::string export_card(const Paths &paths) {
+    const std::wstring picked = card_dialog(true, L"Save a copy of the memory card");
+    if (picked.empty()) return {};
+    std::error_code ec;
+    if (!fs::copy_file(card_path(paths), fs::path(picked), fs::copy_options::overwrite_existing, ec)) return "Not exported: " + ec.message();
+    return "Exported to " + utf8(picked) + ".";
+}
+
 // Starts this executable again in game mode with the player's settings.
 bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
     wchar_t exe[MAX_PATH];
@@ -50,7 +104,7 @@ bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
     fs::create_directories(paths.saves, ec);
     fs::create_directories(paths.logs, ec);
     const auto q = [](const fs::path &p) { return L"\"" + p.wstring() + L"\""; };
-    std::wstring cmd = q(exe) + L" " + q(paths.game / config.get("boot")) + L" --memcard " + q(paths.saves / "memcard1.ps2") +
+    std::wstring cmd = q(exe) + L" " + q(paths.game / config.get("boot")) + L" --memcard " + q(card_path(paths)) +
                        L" --window";
     if (s.graphics.fullscreen) cmd += L" --fullscreen";
     if (s.graphics.widescreen) cmd += L" --widescreen";
@@ -141,6 +195,7 @@ int run() {
         std::string boot;
         disc_ok = check_disc(paths, config, settings.iso, boot, disc_message);
     }
+    std::string card_message;
     bool quit = false, launched = false;
     while (!quit) {
         SDL_Event e;
@@ -240,6 +295,20 @@ int run() {
                 ImGui::BeginDisabled(!disc_ok && !data_ok);
                 if (ImGui::Button("Rebuild")) built = false;
                 ImGui::EndDisabled();
+                ImGui::Separator();
+                // The memory card: the same file PCSX2 uses, brought in or taken out as it is.
+                std::error_code ec;
+                const bool have_card = fs::exists(card_path(paths), ec);
+                ImGui::TextUnformatted("Memory card");
+                ImGui::SameLine();
+                if (ImGui::Button("Import from PCSX2...")) card_message = import_card(paths);
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!have_card);
+                if (ImGui::Button("Export...")) card_message = export_card(paths);
+                ImGui::EndDisabled();
+                ImGui::TextWrapped("%s", !card_message.empty() ? card_message.c_str()
+                                         : have_card    ? "saves\\memcard1.ps2, in PCSX2's format (8 MB)."
+                                                        : "No card yet: the game makes one when it first saves.");
             }
         }
         ImGui::End();

@@ -101,7 +101,7 @@ Everything stays in the extracted folder:
 
 | | |
 |---|---|
-| `saves\memcard1.ps2` | The memory card |
+| `saves\memcard1.ps2` | The memory card, in PCSX2's `.ps2` format: the launcher's **Import from PCSX2...** and **Export...** bring a card in from PCSX2 (keeping the current one as `saves\memcard1-<date>.ps2`) or copy it out |
 | `savestates\quick.state` | The F5 quick save |
 | `logs\build.log`, `logs\game.log` | The game build's log and the game's own log |
 | `settings.ini` | The launcher's settings |
@@ -128,9 +128,9 @@ your disc ──► launcher ──► eerecomp ──► C++ ──► clang �
   same for the game's VU1 and VU0 microcode (this port added VU0). Its runtime provides the rest
   of the PS2: a GS renderer on the GPU (wgpu: Direct3D 12 or Vulkan), the IPU (video), SPU2
   (sound), the IOP and the memory card. This port adds Windows support on top of it.
-- **The IOP**, the PS2's second processor, runs the game's sound and memory card drivers: modules
-  on the disc (`IOP\*.IRX`). The controller driver (PADMAN.IRX) is native code in the runtime
-  instead. This port adds `ioprecomp`, which translates the others to C++ too: the build relocates each module to the address it always loads at (`iop.txt`), and
+- **The IOP**, the PS2's second processor, runs the game's sound drivers: modules on the disc
+  (`IOP\*.IRX`). The controller driver (PADMAN.IRX) and the memory card drivers (MCMAN.IRX and
+  MCSERV.IRX, with the card's file system) are native code in the runtime instead. This port adds `ioprecomp`, which translates the others to C++ too: the build relocates each module to the address it always loads at (`iop.txt`), and
   the runtime uses that code when the module loads there unchanged, else its interpreter. The
   IOP's kernel is the runtime's own native code.
 - **`CastlevaniaLoI.exe`** holds the launcher and the runtime, with no game code inside. It
