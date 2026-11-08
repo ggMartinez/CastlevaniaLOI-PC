@@ -20,7 +20,7 @@ Each part's percentage is an estimate of how much of the way to its native goal 
 | 3 | [Disc drive](#3-disc-drive) | CDVD | Done | 100% |
 | 4 | [Movies](#4-movies) | IPU, `.PSS` files | To do | 0% |
 | 5 | [Kernel threads](#5-kernel-threads) | EE kernel | Later | 80% |
-| 6 | [Sound](#6-sound) | SPU2, IOP | Done | 99% |
+| 6 | [Sound](#6-sound) | SPU2, IOP | Done | 100% |
 | 7 | [VU0 microprograms](#7-vu0-microprograms) | VU0 | Done | 100% |
 | 8 | [Rendering](#8-rendering) | GS, VIF/GIF, VU1 output | To do | 0% |
 
@@ -92,16 +92,23 @@ compiled into `game.dll` on the player's PC.
 
 ## 6. Sound
 
-**Done, 99%.** The remaining 1% is the IOP instructions the interpreter still runs, where a thread
-resumes in the middle of a block.
+**Done, 100%.**
 
 1. **Done: the IOP's modules run natively.** `ioprecomp` translates the IOP modules to C++:
    - Konami's sound driver, Sony's sound library, the MIDI sequencer and the disc streamer;
-   - the pad and memory card drivers.
+   - the memory card drivers (the pad driver is native code of its own: see Controller).
 
-   The build relocates each one to the address it always loads at (`src\config\iop.txt`). About 99% of IOP
-   instructions run translated; the interpreter is left only where a thread resumes in the middle of a block, and as a
-   fallback for a module that loads somewhere else.
+   The build relocates each one to the address it always loads at (`src\config\iop.txt`). Every IOP
+   instruction runs translated: measured over 80 million in gameplay and the same at boot, none
+   interpreted (`PS2_IOP_COUNT`). The interpreter stays only as the fallback for a module that loads
+   somewhere else.
+   - The last 1% (2026-11-08) was two kinds of entry the translated blocks lacked: a thread resuming
+     after a store (where a block stops when a thread switch is pending), and a function reached through
+     an address the code builds or from the loader (a module's start routine, a callback). Both are now
+     entries into the block they fall in (6,099 of them), so the blocks themselves are unchanged. Audio is
+     bit-identical to before, at boot and in gameplay; speed is the same.
+   - "About 99%" before counted calls into the runtime's native code (the kernel, the libraries) as
+     interpreted; they are native C++.
 2. **Done: the SPU2 emulation is complete enough to sound like the chip.** It now has:
    - the reverb unit;
    - the 4-point Gaussian interpolation;

@@ -1115,10 +1115,10 @@ index e54ee19..a2678c1 100644
  struct Translation {
 diff --git a/recomp/ioprecomp.cpp b/recomp/ioprecomp.cpp
 new file mode 100644
-index 0000000..1044efa
+index 0000000..939b1b5
 --- /dev/null
 +++ b/recomp/ioprecomp.cpp
-@@ -0,0 +1,345 @@
+@@ -0,0 +1,403 @@
 +// ioprecomp: translates IOP modules (MIPS R3000A) to C++ blocks for the runtime's IOP dispatch.
 +//
 +// Input: a folder of NAME_BASE.bin files, each a module's text relocated to the hex address BASE
@@ -1132,6 +1132,10 @@ index 0000000..1044efa
 +// rewrites, unknown opcodes, a branch in a delay slot). Each instruction does what the
 +// runtime's interpreter does with it, including the checks for a pending thread switch, so
 +// that the two can be swapped at any block boundary.
++//
++// A block can stop early only after a store, when a thread switch has become pending; the thread
++// later resumes at the next instruction. Each such instruction is an entry into the block too (the
++// block jumps there and counts only what it runs), so a resumed thread stays in translated code.
 +#include "ps2/iop_gen.hpp"
 +
 +#include <algorithm>
@@ -1316,6 +1320,7 @@ index 0000000..1044efa
 +struct Block {
 +    std::uint32_t pc, length;
 +    std::string name, body;
++    std::vector<std::pair<std::uint32_t, std::uint32_t>> entries;  // (pc, instructions before it): resumes after a store, called starts
 +};
 +
 +std::vector<Block> translate(const Module &m) {
@@ -1349,12 +1354,40 @@ index 0000000..1044efa
 +        // a word holding an address in this text: a function pointer (a thread, an RPC handler)
 +        if (w >= m.base && w < end && (w & 3u) == 0) leaders.insert(w);
 +    }
++    // Function starts reached in ways the leaders above miss: through an address the code builds (a
++    // lui, then an addiu or ori: a thread, a callback, an interrupt handler), or from outside (the
++    // module's start routine, which the loader calls): the first instruction after the padding that
++    // follows a jr ra and its delay slot. They become entries into the block they fall in, like the
++    // resume points, so the blocks themselves stay as they are.
++    std::set<std::uint32_t> called;
++    {
++        std::uint32_t upper[32] = {};
++        bool known[32] = {};
++        for (std::uint32_t pc = m.base; pc + 4 <= end; pc += 4) {
++            if (!ok(pc)) continue;
++            const std::uint32_t w = word(m, pc), op = w >> 26, rs = (w >> 21) & 31u, rt = (w >> 16) & 31u;
++            if (op == 0x0F) {
++                upper[rt] = w << 16;
++                known[rt] = true;
++            } else if ((op == 0x09 || op == 0x0D) && known[rs]) {
++                const std::uint32_t v = op == 0x09 ? upper[rs] + static_cast<std::uint32_t>(simm(w)) : upper[rs] | (w & 0xFFFFu);
++                if (ok(v) && (v & 3u) == 0) called.insert(v);
++            }
++            if (w == 0x03E00008u) {
++                std::uint32_t a = pc + 8;
++                while (ok(a) && word(m, a) == 0) a += 4;
++                if (a > pc + 8 && ok(a)) called.insert(a);
++            }
++        }
++    }
 +    std::vector<Block> blocks;
 +    for (const std::uint32_t start : leaders) {
 +        if (!ok(start)) continue;
 +        std::string body;
 +        std::uint32_t pc = start, n = 0;
 +        bool closed = false;
++        std::vector<std::pair<std::uint32_t, std::uint32_t>> entries;
++        bool resume_here = false;  // the previous instruction was a store: a thread may resume here
 +        while (!closed && n < 256) {
 +            if (!ok(pc) || (pc != start && leaders.count(pc))) break;
 +            const std::uint32_t w = word(m, pc);
@@ -1366,6 +1399,10 @@ index 0000000..1044efa
 +                const std::uint32_t sw = word(m, slot);
 +                const Kind sk = classify(sw, slot).kind;
 +                if (sk != Kind::Plain && sk != Kind::Store) break;  // the interpreter runs this pair
++                if (pc != start && (resume_here || called.count(pc))) {
++                    entries.push_back({pc, n});
++                    body += std::format("  e{}:\n", n);
++                }
 +                std::string head, target;
 +                const std::uint32_t op = w >> 26, rs = (w >> 21) & 31u, rd = (w >> 11) & 31u, rt = (w >> 16) & 31u;
 +                if (i.kind == Kind::Branch) {
@@ -1381,31 +1418,42 @@ index 0000000..1044efa
 +                    target = "to";
 +                }
 +                n += 2;
-+                body += std::format("    {{ {}{}c.pc = {}; c.npc = c.pc + 4u; return {}u; }}\n", head, plain(sw, slot), target, n);
++                body += std::format("    {{ {}{}c.pc = {}; c.npc = c.pc + 4u; return {}u - skip; }}\n", head, plain(sw, slot), target, n);
 +                closed = true;
 +                break;
 +            }
++            if (pc != start && (resume_here || called.count(pc))) {
++                entries.push_back({pc, n});
++                body += std::format("  e{}:\n", n);
++            }
++            resume_here = i.kind == Kind::Store;
 +            ++n;
 +            if (i.kind == Kind::Syscall) {
-+                body += std::format("    c.pc = {}; c.npc = {}; gen::syscall(c, {}); return {}u;\n", hex(pc + 4), hex(pc + 8), hex(pc), n);
++                body += std::format("    c.pc = {}; c.npc = {}; gen::syscall(c, {}); return {}u - skip;\n", hex(pc + 4), hex(pc + 8), hex(pc), n);
 +                closed = true;
 +                break;
 +            }
 +            if (i.kind == Kind::Status) {
-+                body += std::format("    c.pc = {}; c.npc = {}; gen::set_status(c, r[{}]); return {}u;\n", hex(pc + 4), hex(pc + 8), (w >> 16) & 31u, n);
++                body += std::format("    c.pc = {}; c.npc = {}; gen::set_status(c, r[{}]); return {}u - skip;\n", hex(pc + 4), hex(pc + 8), (w >> 16) & 31u, n);
 +                closed = true;
 +                break;
 +            }
 +            body += "    " + plain(w, pc);
-+            if (i.kind == Kind::Store) body += std::format("if (gen::switch_pending()) {{ c.pc = {}; c.npc = {}; return {}u; }}", hex(pc + 4), hex(pc + 8), n);
++            if (i.kind == Kind::Store) body += std::format("if (gen::switch_pending()) {{ c.pc = {}; c.npc = {}; return {}u - skip; }}", hex(pc + 4), hex(pc + 8), n);
 +            body += "\n";
 +            pc += 4;
 +        }
 +        if (!n) continue;
-+        if (!closed) body += std::format("    c.pc = {}; c.npc = {}; return {}u;\n", hex(pc), hex(pc + 4), n);
++        if (!closed) body += std::format("    c.pc = {}; c.npc = {}; return {}u - skip;\n", hex(pc), hex(pc + 4), n);
++        std::string prologue = "    std::uint32_t skip = 0;\n";
++        if (!entries.empty()) {
++            prologue += std::format("    if (c.pc != {}) {{\n        switch (c.pc) {{\n", hex(start));
++            for (const auto &[at, before] : entries) prologue += std::format("        case {}: skip = {}u; goto e{};\n", hex(at), before, before);
++            prologue += "        default: break;\n        }\n    }\n";
++        }
 +        std::string id;
 +        for (const char ch : m.name) id += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '_';
-+        blocks.push_back({start, n, std::format("iop_{}_{:08X}", id, start), body});
++        blocks.push_back({start, n, std::format("iop_{}_{:08X}", id, start), prologue + body, entries});
 +    }
 +    return blocks;
 +}
@@ -1436,7 +1484,7 @@ index 0000000..1044efa
 +        if (e.path().filename().string().rfind("iop_", 0) == 0) fs::remove(e.path());
 +    const std::string head = "#include \"ps2/iop_gen.hpp\"\n\n#include <cstdint>\n\nnamespace gen_iop {\n\nusing namespace ps2::iop;\n\n";
 +    std::string table = head, registration;
-+    std::size_t file = 0, total_blocks = 0, total_insns = 0;
++    std::size_t file = 0, total_blocks = 0, total_insns = 0, total_entries = 0;
 +    for (const Module &m : modules) {
 +        const std::vector<Block> blocks = translate(m);
 +        constexpr std::size_t kPerFile = 400;
@@ -1451,17 +1499,27 @@ index 0000000..1044efa
 +        for (const char ch : m.name) id += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '_';
 +        for (const Block &b : blocks) table += std::format("std::uint32_t {}(Cpu &c);\n", b.name);
 +        table += std::format("const gen::Block kBlocks_{}[] = {{\n", id);
-+        for (const Block &b : blocks) table += std::format("    {{0x{:08X}u, {}u, {}}},\n", b.pc, b.length, b.name);
++        std::size_t rows = 0;
++        for (const Block &b : blocks) {
++            table += std::format("    {{0x{:08X}u, {}u, {}}},\n", b.pc, b.length, b.name);
++            for (const auto &[at, before] : b.entries) table += std::format("    {{0x{:08X}u, {}u, {}}},\n", at, b.length - before, b.name);
++            rows += 1 + b.entries.size();
++        }
 +        if (blocks.empty()) table += "    {0, 0, nullptr},\n";
 +        table += "};\n\n";
-+        registration += std::format("    ps2::iop::gen::register_module({{\"{}\", 0x{:08X}u, {}u, 0x{:016X}ull, gen_iop::kBlocks_{}, {}u}});\n", m.name, m.base, m.text.size(), ps2::iop::gen::code_hash(m.text.data(), m.text.size()), id, blocks.size());
++        registration += std::format("    ps2::iop::gen::register_module({{\"{}\", 0x{:08X}u, {}u, 0x{:016X}ull, gen_iop::kBlocks_{}, {}u}});\n", m.name, m.base, m.text.size(), ps2::iop::gen::code_hash(m.text.data(), m.text.size()), id, rows);
 +        total_blocks += blocks.size();
-+        for (const Block &b : blocks) total_insns += b.length;
-+        std::printf("%s at 0x%08X: %zu blocks\n", m.name.c_str(), m.base, blocks.size());
++        std::size_t entries = 0;
++        for (const Block &b : blocks) {
++            total_insns += b.length;
++            entries += b.entries.size();
++        }
++        total_entries += entries;
++        std::printf("%s at 0x%08X: %zu blocks, %zu resume entries\n", m.name.c_str(), m.base, blocks.size(), entries);
 +    }
 +    table += "}\n\nvoid register_generated_iop() {\n" + registration + "}\n";
 +    std::ofstream(out_dir / "iop_table.cpp") << table;
-+    std::printf("%zu IOP modules, %zu blocks, %zu instructions\n", modules.size(), total_blocks, total_insns);
++    std::printf("%zu IOP modules, %zu blocks (%zu more entries to resume at), %zu instructions\n", modules.size(), total_blocks, total_entries, total_insns);
 +    return 0;
 +}
 diff --git a/recomp/main.cpp b/recomp/main.cpp
@@ -4174,7 +4232,7 @@ index 0000000..1f5c0c6
 +
 +}
 diff --git a/runtime/src/iop/cpu.cpp b/runtime/src/iop/cpu.cpp
-index da4b3e4..9941bd8 100644
+index da4b3e4..b4e6744 100644
 --- a/runtime/src/iop/cpu.cpp
 +++ b/runtime/src/iop/cpu.cpp
 @@ -1,9 +1,12 @@
@@ -4190,7 +4248,7 @@ index da4b3e4..9941bd8 100644
  #include <vector>
  
  namespace ps2::iop {
-@@ -58,10 +61,106 @@ std::uint32_t fetch(std::uint32_t pc) {
+@@ -58,10 +61,114 @@ std::uint32_t fetch(std::uint32_t pc) {
      return kernel::fetch_special(pc);
  }
  
@@ -4243,16 +4301,18 @@ index da4b3e4..9941bd8 100644
 +    return n;
 +}
 +
-+// Development measurement (PS2_IOP_COUNT): instructions run translated and interpreted, and the
-+// addresses interpreted most (outside the native-call stubs), printed every 50 million.
-+std::uint64_t g_compiled_count = 0, g_interpreted_count = 0;
++// Development measurement (PS2_IOP_COUNT[=n]): instructions run translated and interpreted, and the
++// addresses interpreted most (outside the native-call stubs), printed every n instructions (50 million
++// when no n is given).
++std::uint64_t g_compiled_count = 0, g_interpreted_count = 0, g_native_calls = 0;
 +std::unordered_map<std::uint32_t, std::uint64_t> g_misses;
 +
 +void report_counts() {
 +    std::vector<std::pair<std::uint64_t, std::uint32_t>> top;
 +    for (const auto &[pc, n] : g_misses) top.push_back({n, pc});
 +    std::sort(top.rbegin(), top.rend());
-+    std::fprintf(stderr, "[iop-count] %llu translated, %llu interpreted:", static_cast<unsigned long long>(g_compiled_count), static_cast<unsigned long long>(g_interpreted_count));
++    std::fprintf(stderr, "[iop-count] %llu translated, %llu interpreted, %llu native calls:", static_cast<unsigned long long>(g_compiled_count),
++                 static_cast<unsigned long long>(g_interpreted_count), static_cast<unsigned long long>(g_native_calls));
 +    for (std::size_t i = 0; i < top.size() && i < 12; ++i) std::fprintf(stderr, " %08X:%llu", top[i].second, static_cast<unsigned long long>(top[i].first));
 +    std::fprintf(stderr, "\n");
 +}
@@ -4260,10 +4320,12 @@ index da4b3e4..9941bd8 100644
  void execute(Cpu &c, std::int64_t &budget) {
      static const bool probing = load_probes();
 +    static const bool check = std::getenv("PS2_IOP_CHECK") != nullptr;
-+    static const bool counting = std::getenv("PS2_IOP_COUNT") != nullptr;
-+    if (counting && g_compiled_count + g_interpreted_count > 50'000'000) {
++    static const char *const count_spec = std::getenv("PS2_IOP_COUNT");
++    static const bool counting = count_spec != nullptr;
++    static const std::uint64_t count_every = count_spec && std::strtoull(count_spec, nullptr, 10) ? std::strtoull(count_spec, nullptr, 10) : 50'000'000ull;
++    if (counting && g_compiled_count + g_interpreted_count > count_every) {
 +        report_counts();
-+        g_compiled_count = g_interpreted_count = 0;
++        g_compiled_count = g_interpreted_count = g_native_calls = 0;
 +        g_misses.clear();
 +    }
      while (budget-- > 0) {
@@ -4291,8 +4353,12 @@ index da4b3e4..9941bd8 100644
 +            }
 +        }
 +        if (counting && !g_interpret_only) {
-+            ++g_interpreted_count;
-+            if (fetch(pc) >> 26 != kHleOpcode && g_misses.size() < 100000) ++g_misses[pc];
++            if (fetch(pc) >> 26 == kHleOpcode) {
++                ++g_native_calls;
++            } else {
++                ++g_interpreted_count;
++                if (g_misses.size() < 100000) ++g_misses[pc];
++            }
 +        }
          if (probing) {
              const std::uint32_t a = pc & (kRamSize - 1);
