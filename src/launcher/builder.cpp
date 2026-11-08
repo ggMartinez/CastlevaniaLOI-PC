@@ -425,6 +425,12 @@ bool build(const Paths &paths, const GameConfig &config, const std::string &iso,
     const fs::path tools = paths.compiler;
     std::wstring cmd = quote(tools / "eerecomp.exe") + L" " + quote(paths.game / boot) + L" --entries " + quote(tools / "config" / "entries.txt") +
                        L" --code-patches " + quote(tools / "config" / "code-patches.txt") + L" --out " + quote(paths.game / "generated");
+    // The third-person camera's hook: the translated code calls the runtime at that instruction.
+    if (const std::string camera = config.get("third_person_camera"); !camera.empty()) {
+        const fs::path probes = paths.game / "probes.txt";
+        std::ofstream(probes) << camera.substr(0, camera.find(':')) << "\n";
+        cmd += L" --probes " + quote(probes);
+    }
     HANDLE p = start(cmd, log);
     if (!p) return fail("cannot start eerecomp.exe");
     if (finish(p) != 0) return fail("eerecomp failed:\n" + tail(log, 15));

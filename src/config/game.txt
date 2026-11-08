@@ -8,3 +8,7 @@ sha1=317b2271be7f24842c4b357c70599219389c004d
 # The first instructions of the VU1 microcode that draws the HUD, menus and text (from the
 # executable's 0x332628): in widescreen what it draws keeps its 4:3 shape, centred.
 widescreen_2d_vu1=01E20006:000002FF:01E80004:000002FF
+# The game's camera, for the third-person camera: the instruction that ends its camera update (the
+# translator probes it; the camera object is in s0), then the camera's target, eye and world-to-camera
+# matrix as offsets into that object, then the address of the player's world matrix (all hex).
+third_person_camera=0065E9DC:30:40:B0:00B284F0

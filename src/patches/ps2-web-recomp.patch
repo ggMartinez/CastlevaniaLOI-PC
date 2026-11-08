@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 6765f07..5cf2372 100644
+index 6765f07..84f27d8 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,12 +45,13 @@ index 6765f07..5cf2372 100644
      runtime/src/iop/kernel.cpp
      runtime/src/iop/libs.cpp
      runtime/src/iop/hw.cpp
-@@ -55,12 +71,26 @@ add_library(ps2runtime STATIC
+@@ -55,12 +71,27 @@ add_library(ps2runtime STATIC
      runtime/src/iop/io.cpp
      runtime/src/iop/cdvd.cpp
      runtime/src/iop/sif.cpp
 -    runtime/src/iop/cdvdfsv.cpp)
 +    runtime/src/iop/cdvdfsv.cpp
++    runtime/src/camera.cpp
 +    runtime/src/iop/padman.cpp
 +    runtime/src/iop/mcfs.cpp
 +    runtime/src/iop/mcserv.cpp)
@@ -74,7 +75,7 @@ index 6765f07..5cf2372 100644
      set(PS2_GS_WGSL "${CMAKE_BINARY_DIR}/gs_wgsl.cpp")
      add_custom_command(OUTPUT "${PS2_GS_WGSL}"
          COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/runtime/src/gs/gpu/gs.wgsl -DOUT=${PS2_GS_WGSL} -DNAME=kGsShader -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
-@@ -69,22 +99,44 @@ if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
+@@ -69,22 +100,44 @@ if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
      add_custom_command(OUTPUT "${PS2_BLIT_WGSL}"
          COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/runtime/src/gs/gpu/blit.wgsl -DOUT=${PS2_BLIT_WGSL} -DNAME=kBlitShader -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
          DEPENDS runtime/src/gs/gpu/blit.wgsl cmake/embed.cmake)
@@ -121,7 +122,7 @@ index 6765f07..5cf2372 100644
      add_library(ps2game STATIC ${PS2_UNITS})
      target_include_directories(ps2game PRIVATE "${PS2_GENERATED}")
      target_link_libraries(ps2game PUBLIC ps2runtime)
-@@ -109,9 +161,25 @@ if(PS2_GENERATED)
+@@ -109,9 +162,25 @@ if(PS2_GENERATED)
          set_target_properties(ps2web PROPERTIES SUFFIX ".html" LINK_DEPENDS ${CMAKE_SOURCE_DIR}/web/shell.html)
          return()
      endif()
@@ -148,7 +149,7 @@ index 6765f07..5cf2372 100644
      if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
          target_sources(ps2run PRIVATE host/profile.cpp)
          target_compile_definitions(ps2run PRIVATE PS2_PROFILE)
-@@ -121,5 +189,43 @@ if(PS2_GENERATED)
+@@ -121,5 +190,43 @@ if(PS2_GENERATED)
          target_sources(ps2run PRIVATE host/window.cpp)
          target_compile_definitions(ps2run PRIVATE PS2_WINDOW)
          target_link_libraries(ps2run PRIVATE SDL2::SDL2)
@@ -213,10 +214,10 @@ index 0000000..6b586b7
 +}
 diff --git a/host/graphics_ui.cpp b/host/graphics_ui.cpp
 new file mode 100644
-index 0000000..2d4285d
+index 0000000..b16c1ed
 --- /dev/null
 +++ b/host/graphics_ui.cpp
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,109 @@
 +#include "graphics_ui.hpp"
 +
 +#include "ps2/system.hpp"
@@ -304,6 +305,24 @@ index 0000000..2d4285d
 +    }
 +    changed |= with_strength("Vignette", g.vignette, &g.vignette_strength, "vignette");
 +    changed |= with_strength("Film grain", g.grain, &g.grain_strength, "grain");
++
++    ImGui::SeparatorText("Camera");
++    const char *const cameras[] = {"Original", "Third person"};
++    int camera = g.third_person ? 1 : 0;
++    if (ImGui::Combo("Player camera", &camera, cameras, 2)) {
++        g.third_person = camera == 1;
++        changed = true;
++    }
++    if (g.third_person) {
++        ImGui::Indent();
++        ImGui::TextDisabled("The right stick turns it; R1 switches to the original camera and back (R2 still blocks).");
++        changed |= ImGui::SliderFloat("Distance", &g.camera_distance, 400.0f, 2000.0f, "%.0f");
++        changed |= ImGui::SliderFloat("Rotation speed", &g.camera_speed, 0.25f, 3.0f, "%.2fx");
++        changed |= ImGui::Checkbox("Invert X axis", &g.camera_invert_x);
++        ImGui::SameLine();
++        changed |= ImGui::Checkbox("Invert Y axis", &g.camera_invert_y);
++        ImGui::Unindent();
++    }
 +    return changed;
 +}
 +
@@ -327,7 +346,7 @@ index 0000000..b5dc0f7
 +
 +}
 diff --git a/host/main.cpp b/host/main.cpp
-index 2fdf426..31f7bce 100644
+index 2fdf426..38a3cdf 100644
 --- a/host/main.cpp
 +++ b/host/main.cpp
 @@ -1,3 +1,4 @@
@@ -422,11 +441,12 @@ index 2fdf426..31f7bce 100644
          else if (a == "--patches" && i + 1 < argc) {
              if (!ps2::load_patches(argv[++i])) return usage();
          }
-@@ -81,14 +139,48 @@ int main(int argc, char **argv) {
+@@ -81,14 +139,49 @@ int main(int argc, char **argv) {
              ps2::g_options.save_state_path = spec.substr(colon + 1);
          }
          else if (a == "--load-state" && i + 1 < argc) load_path = argv[++i];
 +        else if (a == "--states" && i + 1 < argc) ps2::g_options.state_dir = argv[++i];
++        else if (a == "--third-person-camera" && i + 1 < argc) ps2::g_options.third_person_camera = argv[++i];
 +        else if (a == "--widescreen-2d-vu1" && i + 1 < argc) {
 +            // hex words, colon-separated: the 2D microcode's first instructions
 +            for (const char *at = argv[++i]; *at;) {
@@ -1772,6 +1792,42 @@ index a7e0785..f81569f 100644
 +    std::printf("%zu VU%d programs, %zu of them jump targets\n", programs.size(), g_unit, programs.size() - recorded);
      return 0;
  }
+diff --git a/runtime/include/ps2/camera.hpp b/runtime/include/ps2/camera.hpp
+new file mode 100644
+index 0000000..2d53179
+--- /dev/null
++++ b/runtime/include/ps2/camera.hpp
+@@ -0,0 +1,30 @@
++#pragma once
++
++#include <cstdint>
++
++// The third-person camera: an orbit around the player that the right stick turns, in place of the
++// game's own camera (the player's choice, Graphics::third_person; R1 switches between the two while
++// playing). The game is told where its camera is (Options::third_person_camera): the instruction that
++// ends its camera update, which the translator probes, and where the camera keeps its target, eye and
++// world-to-camera matrix, and the player's world matrix. At that instruction the eye is moved and the
++// matrix rebuilt, before the game makes its inverse and hands both to the renderer.
++namespace ps2 {
++
++struct Cpu;
++
++namespace camera {
++
++// Called by the translated code's probes: true when `pc` was the camera's.
++bool hook(Cpu &c, std::uint32_t pc);
++// Controller input on its way to the game: with the third-person camera chosen, R1 switches cameras and
++// the game doesn't see it; while the third-person camera is on, the right stick is the camera's and the
++// game sees it centred.
++std::uint16_t filter_buttons(std::uint16_t pressed);
++std::uint8_t filter_right_stick(int axis, std::uint8_t value);
++// The angle the left stick is turned by, so that "up" walks away from the camera on screen (0 when the
++// game's own camera is on).
++float stick_turn();
++
++}
++
++}
 diff --git a/runtime/include/ps2/disc.hpp b/runtime/include/ps2/disc.hpp
 index 0f1af64..59f34af 100644
 --- a/runtime/include/ps2/disc.hpp
@@ -1817,10 +1873,10 @@ index 45ff208..3f6b54b 100644
  inline constexpr std::uint32_t kMaxDepth = 192;
 diff --git a/runtime/include/ps2/graphics.hpp b/runtime/include/ps2/graphics.hpp
 new file mode 100644
-index 0000000..bd84157
+index 0000000..2eda5c4
 --- /dev/null
 +++ b/runtime/include/ps2/graphics.hpp
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,43 @@
 +#pragma once
 +
 +#include <functional>
@@ -1839,6 +1895,12 @@ index 0000000..bd84157
 +    bool sharpen = false, bloom = false, deband = false, crt = false, crt_curvature = false, vignette = false, grain = false;
 +    float sharpen_strength = 0.5f, bloom_strength = 0.5f, crt_scanlines = 0.5f, vignette_strength = 0.5f, grain_strength = 0.3f;  // 0..1
 +    float brightness = 0.0f, contrast = 1.0f, saturation = 1.0f, gamma = 1.0f;  // -0.5..0.5, 0.5..1.5, 0..2, 0.5..2
++    // The player camera: the game's own, or a third-person one the right stick turns (R1 switches
++    // between the two while playing).
++    bool third_person = false;
++    float camera_distance = 1000.0f;  // 400..2000, from the player
++    float camera_speed = 1.0f;        // 0.25..3
++    bool camera_invert_x = false, camera_invert_y = false;
 +};
 +
 +// Missing keys keep their defaults and values out of range are clamped.
@@ -1985,10 +2047,10 @@ index 6a919d2..efd4b09 100644
  void watch_span(std::uint32_t a, std::uint32_t n, const char *via);
  void init_watch();
 diff --git a/runtime/include/ps2/system.hpp b/runtime/include/ps2/system.hpp
-index f447223..e717fde 100644
+index f447223..97c131c 100644
 --- a/runtime/include/ps2/system.hpp
 +++ b/runtime/include/ps2/system.hpp
-@@ -59,6 +59,12 @@ struct Options {
+@@ -59,6 +59,15 @@ struct Options {
      std::function<void()> on_memcard_saved;
      std::string save_state_path;
      std::uint64_t save_state_frame = 0;
@@ -1998,10 +2060,13 @@ index f447223..e717fde 100644
 +    // widescreen on, what it draws keeps its 4:3 shape, centred, while the 3D view (widened by a
 +    // code patch) fills 16:9. Empty leaves every draw as the game makes it.
 +    std::vector<std::uint32_t> widescreen_2d_vu1;
++    // The game's camera, for the third-person camera (camera.hpp): "hook:target:eye:matrix:player" in
++    // hex, empty when the game has none.
++    std::string third_person_camera;
  };
  
  extern Options g_options;
-@@ -101,7 +107,7 @@ std::uint64_t frame_count();
+@@ -101,7 +110,7 @@ std::uint64_t frame_count();
  bool display_frame(std::vector<std::uint32_t> &rgba, std::uint32_t &width, std::uint32_t &height);
  
  struct WindowTarget {
@@ -2010,7 +2075,7 @@ index f447223..e717fde 100644
      void *display = nullptr;
      std::uint64_t window = 0;
      void *surface = nullptr;
-@@ -113,6 +119,26 @@ struct WindowTarget {
+@@ -113,6 +122,26 @@ struct WindowTarget {
  bool attach_window(const WindowTarget &target);
  void resize_window(std::uint32_t width, std::uint32_t height);
  bool present_frame();
@@ -2072,6 +2137,167 @@ index d98afb7..ddc0f8f 100644
  PS2_VU_INLINE void set_vi(Vu0Regs &r, unsigned i, std::uint32_t v) {
      if (i) r.vi[i] = static_cast<std::uint16_t>(v);
  }
+diff --git a/runtime/src/camera.cpp b/runtime/src/camera.cpp
+new file mode 100644
+index 0000000..812114a
+--- /dev/null
++++ b/runtime/src/camera.cpp
+@@ -0,0 +1,155 @@
++#include "ps2/camera.hpp"
++
++#include "ps2/cpu.hpp"
++#include "ps2/graphics.hpp"
++#include "ps2/memory.hpp"
++#include "ps2/system.hpp"
++
++#include <algorithm>
++#include <atomic>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++namespace ps2::camera {
++
++namespace {
++
++constexpr std::uint16_t kR1 = 0x0800;            // in the controller's button mask
++constexpr float kAboveRoot = 300.0f;             // the point looked at, above the player's root (y points down)
++constexpr float kRoomJump = 250.0f;              // a move this large in one frame is a new room (or a loaded state)
++constexpr float kYawRate = 0.045f, kPitchRate = 0.03f;  // radians per frame at full stick, speed 1
++constexpr float kPitchMin = -0.35f, kPitchMax = 1.2f, kPitchStart = 0.30f;
++
++// Where the game keeps its camera: "hook:target:eye:matrix:player" (hex), offsets into the camera object
++// the hook finds in s0; the player's world matrix at a fixed address.
++struct Spec {
++    bool valid = false;
++    std::uint32_t hook = 0, target = 0, eye = 0, matrix = 0, player = 0;
++};
++
++const Spec &spec() {
++    static const Spec s = [] {
++        Spec r;
++        const std::string &text = g_options.third_person_camera;
++        if (text.empty()) return r;
++        unsigned hook, target, eye, matrix, player;
++        if (std::sscanf(text.c_str(), "%x:%x:%x:%x:%x", &hook, &target, &eye, &matrix, &player) == 5)
++            r = Spec{true, hook, target, eye, matrix, player};
++        else
++            std::fprintf(stderr, "[camera] bad --third-person-camera %s\n", text.c_str());
++        return r;
++    }();
++    return s;
++}
++
++std::atomic<bool> g_chosen{false};  // the player chose the third-person camera (settings)
++std::atomic<bool> g_on{true};       // ... and has it on (R1)
++std::atomic<std::uint8_t> g_stick[2] = {0x80, 0x80};
++std::atomic<float> g_turn{0.0f};
++bool g_r1_down = false;
++
++bool active() { return spec().valid && g_chosen && g_on; }
++
++struct Orbit {
++    bool started = false;
++    float yaw = 0, pitch = kPitchStart;
++    float last_player[3] = {};
++} g_orbit;
++
++float read_f(std::uint32_t a) {
++    float v;
++    std::memcpy(&v, g_ram + (a & (kRamSize - 1)), 4);
++    return v;
++}
++
++}  // namespace
++
++std::uint16_t filter_buttons(std::uint16_t pressed) {
++    if (!spec().valid || !g_chosen) {
++        g_r1_down = false;
++        return pressed;
++    }
++    const bool r1 = (pressed & kR1) != 0;
++    if (r1 && !g_r1_down) g_on = !g_on;
++    g_r1_down = r1;
++    return static_cast<std::uint16_t>(pressed & ~kR1);
++}
++
++std::uint8_t filter_right_stick(int axis, std::uint8_t value) {
++    g_stick[axis & 1] = value;
++    return active() ? 0x80 : value;
++}
++
++float stick_turn() { return active() ? g_turn.load() : 0.0f; }
++
++bool hook(Cpu &c, std::uint32_t pc) {
++    const Spec &s = spec();
++    if (!s.valid || pc != s.hook) return false;
++    const Graphics g = graphics();
++    if (g.third_person && !g_chosen) g_on = true;  // choosing it in the menu turns it on
++    g_chosen = g.third_person;
++    if (!active()) {
++        g_orbit.started = false;
++        g_turn = 0.0f;
++        return true;
++    }
++    const std::uint32_t cam = c.r[16].w[0] & (kRamSize - 1);
++    float target[3], game_eye[3], player[3], facing[2];
++    for (int k = 0; k < 3; ++k) {
++        target[k] = read_f(cam + s.target + 4 * k);
++        game_eye[k] = read_f(cam + s.eye + 4 * k);
++        player[k] = read_f(s.player + 48 + 4 * k);
++    }
++    facing[0] = read_f(s.player + 32);
++    facing[1] = read_f(s.player + 40);
++    const float game_facing = std::atan2(target[0] - game_eye[0], target[2] - game_eye[2]);
++    // Look at the player, unless the matrix isn't near what the game looks at (then keep the game's point).
++    if (std::hypot(player[0] - target[0], player[2] - target[2]) < 1500.0f) {
++        target[0] = player[0];
++        target[1] = player[1] - kAboveRoot;
++        target[2] = player[2];
++    }
++    const float jump = std::hypot(player[0] - g_orbit.last_player[0], player[2] - g_orbit.last_player[2]);
++    if (!g_orbit.started) {
++        // Turned on: start where the game's camera is, so the picture doesn't jump.
++        g_orbit.yaw = game_facing + 3.14159265f;
++        g_orbit.pitch = kPitchStart;
++        g_orbit.started = true;
++    } else if (jump > kRoomJump && std::hypot(facing[0], facing[1]) > 0.5f) {
++        // A new room: start behind the player, looking where he looks.
++        g_orbit.yaw = std::atan2(-facing[0], -facing[1]);
++        g_orbit.pitch = kPitchStart;
++    }
++    std::memcpy(g_orbit.last_player, player, sizeof player);
++    const auto stick = [](std::uint8_t v) {
++        const float f = (static_cast<int>(v) - 128) / 127.0f;
++        return std::fabs(f) < 0.2f ? 0.0f : f;
++    };
++    g_orbit.yaw += stick(g_stick[0]) * kYawRate * g.camera_speed * (g.camera_invert_x ? -1.0f : 1.0f);
++    g_orbit.pitch = std::clamp(g_orbit.pitch + stick(g_stick[1]) * kPitchRate * g.camera_speed * (g.camera_invert_y ? -1.0f : 1.0f), kPitchMin, kPitchMax);
++    const float d = g.camera_distance;
++    const float eye[3] = {target[0] + std::sin(g_orbit.yaw) * std::cos(g_orbit.pitch) * d, target[1] - std::sin(g_orbit.pitch) * d,
++                          target[2] + std::cos(g_orbit.yaw) * std::cos(g_orbit.pitch) * d};
++    // Look-at, as the game builds it: z forward, x level, y = z cross x; rows are world axes.
++    float f[3] = {target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]};
++    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
++    for (float &v : f) v /= fl;
++    const float xl = std::hypot(f[2], f[0]);
++    const float x[3] = {f[2] / xl, 0.0f, -f[0] / xl};
++    const float y[3] = {f[1] * x[2] - f[2] * x[1], f[2] * x[0] - f[0] * x[2], f[0] * x[1] - f[1] * x[0]};
++    float m[16] = {x[0], y[0], f[0], 0, x[1], y[1], f[1], 0, x[2], y[2], f[2], 0, 0, 0, 0, 1};
++    for (int k = 0; k < 3; ++k) {
++        const float *axis = k == 0 ? x : k == 1 ? y : f;
++        m[12 + k] = -(eye[0] * axis[0] + eye[1] * axis[1] + eye[2] * axis[2]);
++    }
++    std::memcpy(g_ram + cam + s.target, target, 12);
++    std::memcpy(g_ram + cam + s.eye, eye, 12);
++    std::memcpy(g_ram + cam + s.matrix, m, sizeof m);
++    // The game steers the player by its own camera's facing: the left stick is turned by the difference.
++    g_turn = std::atan2(target[0] - eye[0], target[2] - eye[2]) - game_facing;
++    return true;
++}
++
++}
 diff --git a/runtime/src/disc.cpp b/runtime/src/disc.cpp
 index 4491f35..b3353d4 100644
 --- a/runtime/src/disc.cpp
@@ -2230,6 +2456,25 @@ index 4491f35..b3353d4 100644
  bool is_open() { return static_cast<bool>(g_reader); }
  
  bool read(std::uint32_t sector, std::uint32_t count, void *out) {
+diff --git a/runtime/src/dispatch.cpp b/runtime/src/dispatch.cpp
+index fe6d8b7..27fd083 100644
+--- a/runtime/src/dispatch.cpp
++++ b/runtime/src/dispatch.cpp
+@@ -1,5 +1,6 @@
+ #include "ps2/generated.hpp"
+ #include "ps2/system.hpp"
++#include "ps2/camera.hpp"
+ 
+ #include <algorithm>
+ #include <cstdio>
+@@ -193,6 +194,7 @@ void stop(Cpu &c, std::uint32_t pc, const char *what) {
+ }
+ 
+ void probe(Cpu &c, std::uint32_t pc) {
++    if (camera::hook(c, pc)) return;
+     std::fprintf(stderr, "[probe] 0x%08X a0 %08X a1 %08X a2 %08X a3 %08X ra %08X v0 %08X\n", pc, c.r[4].w[0], c.r[5].w[0], c.r[6].w[0],
+                  c.r[7].w[0], c.r[31].w[0], c.r[2].w[0]);
+ }
 diff --git a/runtime/src/dmac.cpp b/runtime/src/dmac.cpp
 index 34fe4f2..cf942cb 100644
 --- a/runtime/src/dmac.cpp
@@ -2291,10 +2536,10 @@ index 34fe4f2..cf942cb 100644
          data = buffer.data();
 diff --git a/runtime/src/graphics.cpp b/runtime/src/graphics.cpp
 new file mode 100644
-index 0000000..e8d79de
+index 0000000..9eed781
 --- /dev/null
 +++ b/runtime/src/graphics.cpp
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,146 @@
 +#include "ps2/graphics.hpp"
 +
 +#include <algorithm>
@@ -2317,7 +2562,8 @@ index 0000000..e8d79de
 +const char *const kKeys[] = {"api",         "scale",       "vsync",         "widescreen",    "fullscreen", "aa",         "upscale",
 +                             "sharpen",     "sharpen_strength", "bloom",    "bloom_strength", "brightness", "contrast",  "saturation",
 +                             "gamma",       "deband",      "crt",           "crt_scanlines", "crt_curvature", "vignette", "vignette_strength",
-+                             "grain",       "grain_strength"};
++                             "grain",       "grain_strength", "camera",      "camera_distance", "camera_speed", "camera_invert_x",
++                             "camera_invert_y"};
 +
 +bool is_graphics_key(const std::string &k) {
 +    return std::find_if(std::begin(kKeys), std::end(kKeys), [&](const char *g) { return k == g; }) != std::end(kKeys);
@@ -2372,6 +2618,11 @@ index 0000000..e8d79de
 +    number("vignette_strength", g.vignette_strength, 0.0f, 1.0f);
 +    flag("grain", g.grain);
 +    number("grain_strength", g.grain_strength, 0.0f, 1.0f);
++    if (const std::string *s = text("camera")) g.third_person = *s == "third_person";
++    number("camera_distance", g.camera_distance, 400.0f, 2000.0f);
++    number("camera_speed", g.camera_speed, 0.25f, 3.0f);
++    flag("camera_invert_x", g.camera_invert_x);
++    flag("camera_invert_y", g.camera_invert_y);
 +    return g;
 +}
 +
@@ -2396,7 +2647,9 @@ index 0000000..e8d79de
 +        << "\nbloom_strength=" << g.bloom_strength << "\nbrightness=" << g.brightness << "\ncontrast=" << g.contrast << "\nsaturation=" << g.saturation
 +        << "\ngamma=" << g.gamma << "\ndeband=" << b(g.deband) << "\ncrt=" << b(g.crt) << "\ncrt_scanlines=" << g.crt_scanlines
 +        << "\ncrt_curvature=" << b(g.crt_curvature) << "\nvignette=" << b(g.vignette) << "\nvignette_strength=" << g.vignette_strength
-+        << "\ngrain=" << b(g.grain) << "\ngrain_strength=" << g.grain_strength << "\n";
++        << "\ngrain=" << b(g.grain) << "\ngrain_strength=" << g.grain_strength << "\ncamera=" << (g.third_person ? "third_person" : "original")
++        << "\ncamera_distance=" << g.camera_distance << "\ncamera_speed=" << g.camera_speed << "\ncamera_invert_x=" << b(g.camera_invert_x)
++        << "\ncamera_invert_y=" << b(g.camera_invert_y) << "\n";
 +    std::ofstream(ini, std::ios::binary) << out.str();
 +}
 +
@@ -6397,10 +6650,24 @@ index 710e6b3..d1503fd 100644
  
  }
 diff --git a/runtime/src/iop/sio2.cpp b/runtime/src/iop/sio2.cpp
-index aff8342..0b9e687 100644
+index aff8342..300fa6c 100644
 --- a/runtime/src/iop/sio2.cpp
 +++ b/runtime/src/iop/sio2.cpp
-@@ -21,66 +21,18 @@ namespace {
+@@ -2,11 +2,13 @@
+ 
+ #include "hw.hpp"
+ #include "iop.hpp"
++#include "ps2/camera.hpp"
+ #include "ps2/system.hpp"
+ 
+ #include "ps2/state.hpp"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <atomic>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -21,66 +23,18 @@ namespace {
  
  constexpr std::uint8_t kDigital = 0x41, kAnalog = 0x73, kPressure = 0x79, kConfig = 0xF3;
  
@@ -6474,7 +6741,29 @@ index aff8342..0b9e687 100644
      };
      put(0, 0xFF);
      put(1, p.config ? kConfig : p.mode);
-@@ -164,6 +116,51 @@ void controller(int port, std::size_t at, std::uint32_t out_size) {
+@@ -92,8 +46,19 @@ void controller(int port, std::size_t at, std::uint32_t out_size) {
+         if (p.mode != kDigital) {
+             put(5, p.axes[0]);
+             put(6, p.axes[1]);
+-            put(7, p.axes[2]);
+-            put(8, p.axes[3]);
++            // With the third-person camera, the left stick is turned by the angle between the game's own
++            // camera and the one on screen, so that "up" walks away from the camera the player sees.
++            float lx = p.axes[2] - 128.0f, ly = p.axes[3] - 128.0f;
++            const float turn = &p == &pad(0) ? ps2::camera::stick_turn() : 0.0f;
++            if (turn != 0.0f && (lx * lx + ly * ly) > 0.0f) {
++                const float c = std::cos(turn), s = std::sin(turn);
++                const float rx = lx * c - ly * s, ry = lx * s + ly * c;
++                lx = rx;
++                ly = ry;
++            }
++            const auto axis = [](float v) { return static_cast<std::uint8_t>(std::clamp(v + 128.0f, 0.0f, 255.0f)); };
++            put(7, axis(lx));
++            put(8, axis(ly));
+         }
+         if (p.mode == kPressure) {
+             static const int kBits[12] = {5, 7, 4, 6, 12, 13, 14, 15, 10, 11, 8, 9};
+@@ -164,6 +129,51 @@ void controller(int port, std::size_t at, std::uint32_t out_size) {
          data();
          break;
      }
@@ -6526,7 +6815,7 @@ index aff8342..0b9e687 100644
  }
  
  std::uint8_t xor_of(const std::uint8_t *p, std::size_t n) {
-@@ -178,6 +175,7 @@ void load_card() {
+@@ -178,6 +188,7 @@ void load_card() {
      std::ifstream in(g_options.memcard_path, std::ios::binary);
      if (in) in.read(reinterpret_cast<char *>(g_card.data.data()), static_cast<std::streamsize>(kCardBytes));
      g_card.present = true;
@@ -6534,7 +6823,7 @@ index aff8342..0b9e687 100644
      std::fprintf(stderr, "[mc] card in slot 1: %s%s\n", g_options.memcard_path.c_str(), in ? "" : " (new, unformatted)");
  }
  
-@@ -330,6 +328,15 @@ void reset() {
+@@ -330,6 +341,15 @@ void reset() {
      load_card();
  }
  
@@ -6550,7 +6839,20 @@ index aff8342..0b9e687 100644
  void flush_cards() {
      Card &c = g_card;
      if (!c.dirty || ++c.quiet < 50) return;
-@@ -417,6 +424,9 @@ void set_connected(int pad, bool connected) {
+@@ -400,10 +420,12 @@ void arm_dma(int channel, std::uint32_t madr, std::uint32_t block_words, std::ui
+ }
+ 
+ void set_buttons(int pad, std::uint16_t pressed_mask) {
++    if (pad == 0) pressed_mask = ps2::camera::filter_buttons(pressed_mask);
+     if (pad >= 0 && pad < 2) g_pads[pad].buttons = pressed_mask;
+ }
+ 
+ void set_axis(int pad, int axis, std::uint8_t value) {
++    if (pad == 0 && axis >= 0 && axis < 2) value = ps2::camera::filter_right_stick(axis, value);
+     if (pad >= 0 && pad < 2 && axis >= 0 && axis < 4) g_pads[pad].axes[axis] = value;
+ }
+ 
+@@ -417,6 +439,9 @@ void set_connected(int pad, bool connected) {
  
  std::uint16_t rumble(int pad) { return pad >= 0 && pad < 2 ? g_feel[pad].rumble.load(std::memory_order_relaxed) : 0; }
  
@@ -7424,10 +7726,10 @@ index e83b8c9..d9f49f1 100644
      vuops::FlagPipe pipe;
 diff --git a/tests/graphics_settings_test.cpp b/tests/graphics_settings_test.cpp
 new file mode 100644
-index 0000000..e085f44
+index 0000000..8c4807b
 --- /dev/null
 +++ b/tests/graphics_settings_test.cpp
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,106 @@
 +// Tests the graphics settings file (settings.ini) shared by the launcher and the game: run the built
 +// graphics_settings_test; it exits 0 when every check passes and prints the first failure otherwise.
 +#include "ps2/graphics.hpp"
@@ -7477,6 +7779,9 @@ index 0000000..e085f44
 +    g.contrast = 1.3f;
 +    g.saturation = 0.4f;
 +    g.gamma = 1.8f;
++    g.third_person = g.camera_invert_x = g.camera_invert_y = true;
++    g.camera_distance = 1250.0f;
++    g.camera_speed = 2.5f;
 +    const std::string path = temp_file("graphics_round_trip.ini", "");
 +    ps2::save_graphics(path, g);
 +    const ps2::Graphics l = ps2::load_graphics(path);
@@ -7488,6 +7793,7 @@ index 0000000..e085f44
 +              near(l.grain_strength, 0.9f),
 +          "round_trip: strengths");
 +    check(near(l.brightness, -0.2f) && near(l.contrast, 1.3f) && near(l.saturation, 0.4f) && near(l.gamma, 1.8f), "round_trip: colour");
++    check(l.third_person && l.camera_invert_x && l.camera_invert_y && near(l.camera_distance, 1250.0f) && near(l.camera_speed, 2.5f), "round_trip: camera");
 +}
 +
 +void old_file() {
@@ -7496,6 +7802,7 @@ index 0000000..e085f44
 +    const ps2::Graphics d;
 +    check(l.fullscreen && !l.widescreen && l.scale == 3, "old_file: existing keys");
 +    check(l.api == d.api && l.vsync == d.vsync && l.fxaa == d.fxaa && l.bloom == d.bloom && l.gamma == d.gamma, "old_file: new keys at defaults");
++    check(!l.third_person && l.camera_distance == d.camera_distance && l.camera_speed == d.camera_speed, "old_file: the original camera by default");
 +    ps2::save_graphics(path, l);
 +    check(read(path).find("iso=x\n") != std::string::npos, "old_file: save keeps iso");
 +    check(read(path).find("bloom_strength=") != std::string::npos, "old_file: save writes every key");
@@ -7508,6 +7815,8 @@ index 0000000..e085f44
 +    check(ps2::load_graphics(temp_file("graphics_c4.ini", "gamma=9\n")).gamma == 2.0f, "clamps: gamma 9 -> 2");
 +    check(ps2::load_graphics(temp_file("graphics_c5.ini", "api=metal\n")).api == ps2::Api::vulkan, "clamps: api metal -> vulkan (the default)");
 +    check(ps2::load_graphics(temp_file("graphics_c6.ini", "api=d3d12\n")).api == ps2::Api::d3d12, "clamps: api d3d12 kept");
++    check(ps2::load_graphics(temp_file("graphics_c7.ini", "camera_distance=50\n")).camera_distance == 400.0f, "clamps: camera_distance 50 -> 400");
++    check(ps2::load_graphics(temp_file("graphics_c8.ini", "camera_speed=9\n")).camera_speed == 3.0f, "clamps: camera_speed 9 -> 3");
 +    check(ps2::Graphics{}.api == ps2::Api::vulkan, "defaults: Vulkan");
 +}
 +

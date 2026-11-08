@@ -63,6 +63,13 @@ patch by arapapa, with nemesis2000's fix that keeps movies 4:3). The menus, text
 but moves to the top-left corner; fades and full-screen effects still cover the whole picture.
 Switching it needs no new build, and works while playing (F10).
 
+**Third-person camera** (Camera, Player camera): in place of the game's fixed cameras, a camera
+behind Leon that the right stick turns, as in Curse of Darkness, with its distance, rotation speed
+and inverted axes in the same options. The left stick then walks relative to it. R1 switches between
+it and the game's own camera while playing (R2 still blocks), and the right stick goes back to the
+game (the item menu) while the game's camera is on. The camera can pass through walls, and the
+game's scripted cameras haven't all been checked with it.
+
 After the build the game plays from those copied files: the disc image is no longer needed, to play
 or to build again, and you can move or delete it. After an update of the port, the launcher asks you
 to build the game again (the new version needs a `game.dll` made for it); that rebuild uses the

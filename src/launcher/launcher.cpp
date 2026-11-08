@@ -111,6 +111,8 @@ bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
     // Passed in 4:3 too, so switching to 16:9 in the F10 menu can narrow the 2D layer (unused in 4:3).
     if (!config.get("widescreen_2d_vu1").empty())
         cmd += L" --widescreen-2d-vu1 " + fs::path(config.get("widescreen_2d_vu1")).wstring();
+    if (!config.get("third_person_camera").empty())
+        cmd += L" --third-person-camera " + fs::path(config.get("third_person_camera")).wstring();
     // Quick save / load (F5 / F6): a developer build inside the repository uses its .savestates
     // folder, so states outlive clean builds; any other copy keeps them beside the executable.
     fs::path states = paths.root / "savestates";
