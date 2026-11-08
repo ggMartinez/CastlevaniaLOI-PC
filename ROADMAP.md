@@ -16,7 +16,7 @@ Each part's percentage is an estimate of how much of the way to its native goal 
 |---|---|---|---|---|
 | — | [Game code](#game-code) | EE CPU, VU1 microcode | Done | 100% |
 | 1 | [Memory card](#1-memory-card) | SIO2, MCMAN/MCSERV.IRX | Later | 40% |
-| 2 | [Controller](#2-controller) | SIO2, PADMAN.IRX | Later | 40% |
+| 2 | [Controller](#2-controller) | SIO2, PADMAN.IRX | Done | 100% |
 | 3 | [Disc drive](#3-disc-drive) | CDVD | Done | 100% |
 | 4 | [Movies](#4-movies) | IPU, `.PSS` files | To do | 0% |
 | 5 | [Kernel threads](#5-kernel-threads) | EE kernel | Later | 80% |
@@ -24,7 +24,7 @@ Each part's percentage is an estimate of how much of the way to its native goal 
 | 7 | [VU0 microprograms](#7-vu0-microprograms) | VU0 | Done | 100% |
 | 8 | [Rendering](#8-rendering) | GS, VIF/GIF, VU1 output | To do | 0% |
 
-Last updated: 2026-11-07.
+Last updated: 2026-11-08.
 
 ## Game code
 
@@ -42,12 +42,30 @@ compiled into `game.dll` on the player's PC.
 
 ## 2. Controller
 
-**Later, 40%.**
+**Done, 100%.**
 
-- **Today:** the game's pad driver (PADMAN.IRX) runs as translated native code on the IOP, reading a simulated
-  DualShock 2 fed by SDL.
-- **Native goal:** have the game's pad read return SDL's controller state directly.
-- **Notes:** possibly up to a frame less input lag; unmeasured.
+- **Today:** the game's pad driver, PADMAN.IRX, is native code: `runtime/src/iop/padman.cpp` answers
+  the game's libpad calls and, each frame, sends each open port one command to its DualShock and copies
+  the 128-byte state block to the game, as PADMAN does. The DualShock itself stays a model of the device
+  in C++ (`sio2.cpp`), as the SPU2 does; SIO2's transfers now serve only the memory card.
+- **How it was made:** from PADMAN's own code (disassembled; its fields, tasks and timing are in
+  [docs/superpowers/plans/2026-11-08-native-pad.md](docs/superpowers/plans/2026-11-08-native-pad.md)),
+  and checked against the translated module block by block, every byte of every frame:
+  - boot to the title: the controller query, the analog and pressure modes, vibration alignment, and
+    port 2's search with no pad: identical;
+  - every button, button combinations, both sticks: identical;
+  - a pad plugged into port 2 mid-game and pulled out: identical, but for one vibration write the game
+    made right after a request, which the native driver applies a frame sooner. That comes from how
+    the IOP keeps time with the EE (it runs ahead by up to a frame, more with PADMAN's threads), not
+    from PADMAN, and a vibration change can only come sooner, never later;
+  - save states: one made with the native driver resumes exactly; older ones keep the translated
+    PADMAN they were saved with.
+- **Notes:**
+  - Input lag (measured 2026-11-08): none to win either way. The controller reading is about 1.5 ms
+    old on average (5.5 ms worst) when the frame starts, and a press reaches the game in the frame it
+    is made.
+  - `PS2_NATIVE_PAD=0` runs the translated PADMAN instead, for comparison.
+  - The IOP saves about 0.04 ms per frame.
 
 ## 3. Disc drive
 

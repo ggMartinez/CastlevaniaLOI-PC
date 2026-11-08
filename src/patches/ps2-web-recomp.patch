@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 6765f07..d268bec 100644
+index 6765f07..21ea9db 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,7 +42,14 @@ index 6765f07..d268bec 100644
      runtime/src/iop/kernel.cpp
      runtime/src/iop/libs.cpp
      runtime/src/iop/hw.cpp
-@@ -60,7 +73,18 @@ target_include_directories(ps2runtime PUBLIC runtime/include)
+@@ -55,12 +68,24 @@ add_library(ps2runtime STATIC
+     runtime/src/iop/io.cpp
+     runtime/src/iop/cdvd.cpp
+     runtime/src/iop/sif.cpp
+-    runtime/src/iop/cdvdfsv.cpp)
++    runtime/src/iop/cdvdfsv.cpp
++    runtime/src/iop/padman.cpp)
+ target_include_directories(ps2runtime PUBLIC runtime/include)
  target_compile_options(ps2runtime PRIVATE -Wall -Wextra)
  
  set(PS2_WGPU_DIR "${CMAKE_SOURCE_DIR}/third_party/wgpu-native" CACHE PATH "wgpu-native release folder")
@@ -62,7 +69,7 @@ index 6765f07..d268bec 100644
      set(PS2_GS_WGSL "${CMAKE_BINARY_DIR}/gs_wgsl.cpp")
      add_custom_command(OUTPUT "${PS2_GS_WGSL}"
          COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/runtime/src/gs/gpu/gs.wgsl -DOUT=${PS2_GS_WGSL} -DNAME=kGsShader -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
-@@ -69,22 +93,44 @@ if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
+@@ -69,22 +94,44 @@ if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
      add_custom_command(OUTPUT "${PS2_BLIT_WGSL}"
          COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}/runtime/src/gs/gpu/blit.wgsl -DOUT=${PS2_BLIT_WGSL} -DNAME=kBlitShader -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
          DEPENDS runtime/src/gs/gpu/blit.wgsl cmake/embed.cmake)
@@ -109,7 +116,7 @@ index 6765f07..d268bec 100644
      add_library(ps2game STATIC ${PS2_UNITS})
      target_include_directories(ps2game PRIVATE "${PS2_GENERATED}")
      target_link_libraries(ps2game PUBLIC ps2runtime)
-@@ -109,9 +155,25 @@ if(PS2_GENERATED)
+@@ -109,9 +156,25 @@ if(PS2_GENERATED)
          set_target_properties(ps2web PROPERTIES SUFFIX ".html" LINK_DEPENDS ${CMAKE_SOURCE_DIR}/web/shell.html)
          return()
      endif()
@@ -136,7 +143,7 @@ index 6765f07..d268bec 100644
      if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
          target_sources(ps2run PRIVATE host/profile.cpp)
          target_compile_definitions(ps2run PRIVATE PS2_PROFILE)
-@@ -121,5 +183,43 @@ if(PS2_GENERATED)
+@@ -121,5 +184,43 @@ if(PS2_GENERATED)
          target_sources(ps2run PRIVATE host/window.cpp)
          target_compile_definitions(ps2run PRIVATE PS2_WINDOW)
          target_link_libraries(ps2run PRIVATE SDL2::SDL2)
@@ -4326,10 +4333,16 @@ index 275374b..0b25b73 100644
  void set_trace(bool modules, bool hle);
  
 diff --git a/runtime/src/iop/kernel.cpp b/runtime/src/iop/kernel.cpp
-index 9349970..99de874 100644
+index 9349970..832e43c 100644
 --- a/runtime/src/iop/kernel.cpp
 +++ b/runtime/src/iop/kernel.cpp
-@@ -580,6 +580,7 @@ void call_hle(Cpu &c, std::uint32_t id) {
+@@ -1,4 +1,5 @@
+ #include "kernel.hpp"
++#include "padman.hpp"
+ 
+ #include "hw.hpp"
+ #include "io.hpp"
+@@ -580,6 +581,7 @@ void call_hle(Cpu &c, std::uint32_t id) {
  void reset() {
      hw::reset();
      kernel::boot();
@@ -4337,7 +4350,7 @@ index 9349970..99de874 100644
  }
  
  std::uint64_t cycles() { return kernel::g_now; }
-@@ -629,7 +630,10 @@ void run(std::uint64_t ee_cycles) {
+@@ -629,7 +631,10 @@ void run(std::uint64_t ee_cycles) {
          if (budget <= 0) budget = 1;
          const std::int64_t given = budget;
          execute(g_cpu, budget);
@@ -4349,7 +4362,7 @@ index 9349970..99de874 100644
      }
  }
  
-@@ -708,10 +712,43 @@ std::int32_t link_module(const std::vector<std::uint8_t> &data, const std::strin
+@@ -708,10 +713,43 @@ std::int32_t link_module(const std::vector<std::uint8_t> &data, const std::strin
      const int id = g_next_module++;
      g_modules[id] = Module{id, name, base, total, base + entry, base + gp};
      g_module_paths[id] = path;
@@ -4393,7 +4406,7 @@ index 9349970..99de874 100644
  bool start_module(int id, const std::string &args, std::function<void(int, int)> done) {
      using namespace kernel;
      auto found = g_modules.find(id);
-@@ -746,6 +783,7 @@ bool start_module(int id, const std::string &args, std::function<void(int, int)>
+@@ -746,6 +784,7 @@ bool start_module(int id, const std::string &args, std::function<void(int, int)>
          if ((result & 3u) == 1u) {
              const Module &m = g_modules[id];
              free(m.base);
@@ -4401,7 +4414,12 @@ index 9349970..99de874 100644
          }
      };
      start_thread(tid, static_cast<std::uint32_t>(argv.size()), argv_at);
-@@ -850,6 +888,7 @@ void state(ps2::state::Stream &s) {
+@@ -846,10 +885,12 @@ void state(ps2::state::Stream &s) {
+     kernel::libs_state(s);
+     kernel::cdvd_state(s);
+     kernel::cdvdfsv_state(s);
++    if (s.version() >= 8) padman::state(s);
+     hw::state(s);
      sio2::state(s);
      spu2::state(s);
      io::state(s);
@@ -4409,11 +4427,29 @@ index 9349970..99de874 100644
  }
  
  }
+diff --git a/runtime/src/iop/kernel.hpp b/runtime/src/iop/kernel.hpp
+index 396e6f8..ba62cbc 100644
+--- a/runtime/src/iop/kernel.hpp
++++ b/runtime/src/iop/kernel.hpp
+@@ -65,6 +65,7 @@ enum JobKind : std::uint32_t {
+     kJobFsvIopRead,
+     kJobSifDmaCallback,
+     kJobSifReply,
++    kJobPadmanFrame,
+     kJobCount
+ };
+ struct Job {
 diff --git a/runtime/src/iop/libs.cpp b/runtime/src/iop/libs.cpp
-index 68bc21b..5bae753 100644
+index 68bc21b..e4b5393 100644
 --- a/runtime/src/iop/libs.cpp
 +++ b/runtime/src/iop/libs.cpp
-@@ -6,6 +6,7 @@
+@@ -1,4 +1,5 @@
+ #include "kernel.hpp"
++#include "padman.hpp"
+ 
+ #include "hw.hpp"
+ 
+@@ -6,6 +7,7 @@
  
  #include <algorithm>
  #include <cstdio>
@@ -4421,11 +4457,776 @@ index 68bc21b..5bae753 100644
  #include <deque>
  #include <map>
  #include <set>
+@@ -1388,6 +1390,7 @@ namespace ps2::iop {
+ void vblank(bool start) {
+     hw::raise_interrupt(start ? 0u : 11u);
+     kernel::vblank_edge(start);
++    if (start) padman::vblank();
+ }
+ 
+ }
+diff --git a/runtime/src/iop/padman.cpp b/runtime/src/iop/padman.cpp
+new file mode 100644
+index 0000000..aae7e2b
+--- /dev/null
++++ b/runtime/src/iop/padman.cpp
+@@ -0,0 +1,715 @@
++#include "padman.hpp"
++
++#include "iop.hpp"
++#include "kernel.hpp"
++#include "sif.hpp"
++#include "sio2.hpp"
++
++#include "ps2/memory.hpp"
++#include "ps2/state.hpp"
++#include "ps2/system.hpp"
++
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <vector>
++
++// A native PADMAN. What it does, and where each value lives, follows the translated module's code
++// (base 0x49F00 in this game; see docs/superpowers/plans/2026-11-08-native-pad.md): per port, a 0x1C4-
++// byte slot at 0x51FA0 + port * 0x710, whose first 0x80 bytes are the block the EE reads and the rest
++// PADMAN's own fields, named here by their offsets. Only slot 0 of each port is used (no multitap).
++namespace ps2::iop::padman {
++
++namespace {
++
++constexpr std::uint32_t kModuleBase = 0x49F00, kModuleEnd = 0x53D00;  // PADMAN's memory, kept for it
++constexpr std::uint32_t kSlots = 0x51FA0, kPortStride = 0x710;
++constexpr std::uint32_t kServer = 0x80000100;
++
++// Tasks, as PADMAN numbers them (field 432 the current one, 434 the requested one).
++constexpr std::uint16_t kUpdate = 1, kQuery = 2, kMainMode = 4, kActAlign = 5, kButtonInfo = 6;
++
++// Field offsets in a slot (PADMAN's own layout).
++enum : std::uint32_t {
++    kMailbox = 128,       // the EE writes vibration here: two 32-byte halves (counter, new flag, data from +12)
++    kConfigured = 192,    // 2: queried in config mode, 1: a pad without config mode
++    kModeId = 193,        // the pad's id as last found (0x41 digital, 0x73 analog, 0x79 pressure)
++    kModel = 194,
++    kModes = 195,
++    kModeOffset = 196,
++    kActuators = 197,
++    kCombinations = 198,
++    kFirstFind = 199,     // set at open and while no pad answers: the next find resets the align to FF
++    kActInfo = 200,       // 4 bytes per actuator
++    kCombInfo = 216,      // 4 bytes per combination
++    kModeTable = 232,     // u16 per mode
++    kButtonMask = 240,    // what button info asks for
++    kButtonsFound = 244,  // what the pad's 0x41 reported
++    kVref = 248,          // 12 bytes
++    kButtonInfoDone = 262,
++    kCommand = 264,       // the command sent (32 bytes)
++    kReply = 296,         // the reply (32 bytes)
++    kData = 328,          // the last good reply
++    kDataReady = 360,     // u16
++    kMainModeArg = 362,
++    kLockArg = 363,
++    kActDirect = 364,     // 6 bytes (plus 2)
++    kActDirectSize = 372, // u16
++    kAlign = 374,         // 6 bytes
++    kState = 380,         // u16: 0 disconnected, 2 digital only, 5 executing, 6 stable, 7 error
++    kRequestState = 382,  // u16: 0 complete, 1 failed, 2 busy
++    kFrame = 384,         // u32
++    kEeBuffer = 388,      // u32
++    kRetries = 392,       // u32
++    kCurrentTask = 432,   // u16
++    kRequestedTask = 434, // u16
++    kPortType = 440,      // u32
++};
++
++// Where a port's task is: the translated module keeps this in each task thread's registers.
++struct Run {
++    std::uint16_t step = 0;
++    std::uint16_t item = 0;
++    std::uint16_t tries = 0;
++    std::uint8_t found = 0;          // the query's mode id found by its first find
++    std::uint8_t spare = 0;
++    std::uint16_t update_fails = 0;  // failed polls in a row, in the update task
++    std::uint8_t query_pending = 0;  // a query started this frame, to run from the next
++    std::uint8_t pad0 = 0;
++};
++
++struct Port {
++    std::uint8_t open = 0;
++    std::uint8_t fresh = 0;   // a request arrived since the last block: it is started a frame later
++    std::uint8_t opened = 0;  // opened since the last block: the first frame only writes the block
++    std::uint8_t pad0 = 0;
++    Run run;
++};
++
++Port g_ports[2];
++bool g_installed = false;
++
++std::uint32_t slot_address(int port) { return kSlots + static_cast<std::uint32_t>(port) * kPortStride; }
++std::uint8_t *slot(int port) { return ram_ptr(slot_address(port)); }
++std::uint8_t u8(int port, std::uint32_t o) { return slot(port)[o]; }
++void set8(int port, std::uint32_t o, std::uint8_t v) { slot(port)[o] = v; }
++std::uint16_t u16(int port, std::uint32_t o) {
++    std::uint16_t v;
++    std::memcpy(&v, slot(port) + o, 2);
++    return v;
++}
++void set16(int port, std::uint32_t o, std::uint16_t v) { std::memcpy(slot(port) + o, &v, 2); }
++std::uint32_t u32(int port, std::uint32_t o) {
++    std::uint32_t v;
++    std::memcpy(&v, slot(port) + o, 4);
++    return v;
++}
++void set32(int port, std::uint32_t o, std::uint32_t v) { std::memcpy(slot(port) + o, &v, 4); }
++
++// The size of a transfer to a pad in a given mode: 3 bytes, then the mode's halfwords (its low
++// nibble); unknown (0) uses 5.
++std::size_t transfer_size(std::uint8_t id) { return id == 0 ? 5u : 3u + 2u * (id & 0x0Fu); }
++
++// One command exchange with the port's DualShock. The reply buffer is cleared first, as PADMAN does;
++// false when the pad does not answer.
++bool transfer(int port, const std::vector<std::uint8_t> &command) {
++    std::uint8_t *s = slot(port);
++    std::memset(s + kCommand, 0, 32);
++    std::memset(s + kReply, 0, 32);
++    std::memcpy(s + kCommand, command.data(), std::min<std::size_t>(command.size(), 32));
++    std::vector<std::uint8_t> reply(command.size(), 0xFF);
++    if (!sio2::answer(sio2::pad(port), sio2::feel(port), command.data(), command.size(), reply.data(), reply.size())) return false;
++    std::memcpy(s + kReply, reply.data(), std::min<std::size_t>(reply.size(), 32));
++    return true;
++}
++
++bool known_id(std::uint8_t id) { return id != 0 && (id & 0x0Fu) != 0; }
++
++// The commands. Each returns whether the pad answered as expected; their results go into the slot.
++std::vector<std::uint8_t> command(std::uint8_t cmd, std::size_t size, std::uint8_t fill) {
++    std::vector<std::uint8_t> c(size, fill);
++    c[0] = 0x01;
++    c[1] = cmd;
++    c[2] = 0x00;
++    return c;
++}
++
++bool reply_ok(int port, std::uint8_t expect_id) {
++    const std::uint8_t *r = slot(port) + kReply;
++    return r[2] == 0x5A && (expect_id == 0 || r[1] == expect_id);
++}
++
++bool find(int port) {
++    if (!transfer(port, command(0x42, 5, 0x00))) return false;
++    const std::uint8_t id = slot(port)[kReply + 1];
++    if (!known_id(id) || slot(port)[kReply + 2] != 0x5A) return false;
++    set8(port, kModeId, id);
++    return true;
++}
++
++bool poll(int port) {
++    std::vector<std::uint8_t> c = command(0x42, transfer_size(u8(port, kModeId)), 0x00);
++    for (std::uint16_t i = 0; i < u16(port, kActDirectSize) && 3u + i < c.size(); ++i)
++        c[3 + i] = u8(port, kAlign + i) != 0xFF ? u8(port, kActDirect + i) : 0x00;
++    return transfer(port, c);
++}
++
++bool enter_config(int port, std::uint8_t id) {
++    std::vector<std::uint8_t> c = command(0x43, transfer_size(id), 0x00);
++    c[3] = 0x01;
++    return transfer(port, c) && reply_ok(port, 0);
++}
++
++bool exit_config(int port) {
++    std::vector<std::uint8_t> c = command(0x43, 9, 0x5A);
++    c[3] = 0x00;
++    return transfer(port, c) && reply_ok(port, 0xF3);
++}
++
++bool model(int port) {
++    if (!transfer(port, command(0x45, 9, 0x5A)) || !reply_ok(port, 0xF3)) return false;
++    const std::uint8_t *r = slot(port) + kReply;
++    set8(port, kModel, r[3]);
++    set8(port, kModes, r[4]);
++    set8(port, kModeOffset, r[5]);
++    set8(port, kActuators, r[6]);
++    set8(port, kCombinations, r[7]);
++    return true;
++}
++
++bool table(int port, std::uint8_t cmd, std::uint8_t index) {
++    std::vector<std::uint8_t> c = command(cmd, 9, 0x5A);
++    c[3] = index;
++    if (!transfer(port, c) || !reply_ok(port, 0xF3)) return false;
++    const std::uint8_t *r = slot(port) + kReply;
++    if (cmd == 0x46) std::memcpy(slot(port) + kActInfo + index * 4u, r + 5, 4);
++    if (cmd == 0x47) std::memcpy(slot(port) + kCombInfo + index * 4u, r + 5, 4);
++    if (cmd == 0x4C) set16(port, kModeTable + index * 2u, static_cast<std::uint16_t>((r[5] << 8) | r[6]));
++    return true;
++}
++
++bool set_main_mode(int port) {
++    std::vector<std::uint8_t> c = command(0x44, 9, 0x00);
++    c[3] = u8(port, kMainModeArg);
++    c[4] = u8(port, kLockArg);
++    return transfer(port, c) && reply_ok(port, 0xF3);
++}
++
++bool set_align(int port) {
++    std::vector<std::uint8_t> c = command(0x4D, 9, 0xFF);
++    for (int i = 0; i < 6; ++i) c[3 + static_cast<std::size_t>(i)] = u8(port, kAlign + static_cast<std::uint32_t>(i));
++    return transfer(port, c) && reply_ok(port, 0xF3);
++}
++
++bool button_mask(int port) {
++    if (!transfer(port, command(0x41, 9, 0x5A)) || !reply_ok(port, 0xF3)) return false;
++    std::memcpy(slot(port) + kButtonsFound, slot(port) + kReply + 3, 4);
++    return true;
++}
++
++bool set_buttons(int port) {
++    std::vector<std::uint8_t> c = command(0x4F, 9, 0x00);
++    for (int i = 0; i < 3; ++i) c[3 + static_cast<std::size_t>(i)] = u8(port, kButtonMask + static_cast<std::uint32_t>(i));
++    return transfer(port, c) && reply_ok(port, 0xF3);
++}
++
++bool set_vref(int port, std::uint8_t index) {
++    std::vector<std::uint8_t> c = command(0x40, 9, 0x00);
++    c[3] = index;
++    c[4] = u8(port, kVref + index);
++    return transfer(port, c) && reply_ok(port, 0xF3);
++}
++
++// A query starts: PADMAN's query thread clears what it will find out.
++void query_reset(int port) {
++    for (std::uint32_t o : {kModeId, kConfigured, kModel, kModes, kActuators, kCombinations}) set8(port, o, 0);
++    set16(port, kDataReady, 0);
++    set16(port, kActDirectSize, 0);
++    set32(port, kRetries, 0);
++    for (std::uint32_t i = 0; i < 4; ++i) {
++        set8(port, kButtonMask + i, 0);
++        set8(port, kButtonsFound + i, 0);
++    }
++    const std::uint8_t align[6] = {0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF};
++    std::memcpy(slot(port) + kAlign, align, 6);
++    std::memset(slot(port) + kActDirect, 0, 6);
++}
++
++// A query starts. In the translated module it is a thread the port's update task starts, and its first
++// act, the reset, waits for a lower priority to run: before this frame's block only when the main loop
++// still has to wait for port 2's transfer, so for port 1 with port 2 busy this frame; otherwise it shows
++// a frame later (measured on both ports, at boot, on a mode change and after a lost pad).
++void start_query(int port) {
++    Run &r = g_ports[port].run;
++    set16(port, kCurrentTask, kQuery);
++    r.step = 0;
++    r.item = 0;
++    r.tries = 0;
++    r.update_fails = 0;
++    if (port == 0 && g_ports[1].open && !g_ports[1].opened) query_reset(port);
++    else r.query_pending = 1;
++}
++
++// A task step that failed: up to 10 tries, then the task gives up with what PADMAN sets then.
++bool give_up(int port, std::uint16_t request_state, bool clear_id) {
++    Run &r = g_ports[port].run;
++    if (++r.tries < 10) return false;
++    if (clear_id) set8(port, kModeId, 0);
++    if (request_state) set16(port, kRequestState, request_state);
++    set16(port, kCurrentTask, kUpdate);
++    r.tries = 0;
++    return true;
++}
++
++void next(Run &r, std::uint16_t step) {
++    r.step = step;
++    r.tries = 0;
++    r.item = 0;
++}
++
++// Act direct (vibration values), from the EE's mailbox: the newer half, if it is flagged.
++void mailbox(int port) {
++    const std::uint32_t c0 = u32(port, kMailbox), c1 = u32(port, kMailbox + 32);
++    const std::uint32_t half = kMailbox + (c0 < c1 ? 32u : 0u);
++    if (!u32(port, half + 4)) return;
++    if (u8(port, kConfigured) != 1 && u16(port, kCurrentTask) == kUpdate) {
++        std::memcpy(slot(port) + kActDirect, slot(port) + half + 12, 6);
++        set16(port, kActDirectSize, 6);
++    }
++    set32(port, half + 4, 0);
++}
++
++void update_step(int port) {
++    Run &r = g_ports[port].run;
++    mailbox(port);
++    if (poll(port)) {
++        const std::uint8_t *reply = slot(port) + kReply;
++        if (reply[2] != 0x5A || reply[1] != u8(port, kModeId) || reply[1] == 0xF3) {
++            set16(port, kDataReady, 0);
++            set16(port, kState, 5);
++            start_query(port);
++            return;
++        }
++        std::memcpy(slot(port) + kData, reply, 32);
++        set16(port, kDataReady, 1);
++        set16(port, kState, u8(port, kConfigured) == 1 ? 2 : 6);
++        if (u16(port, kRequestState) == 2 && u16(port, kRequestedTask) == 0) set16(port, kRequestState, 0);
++        r.update_fails = 0;
++        return;
++    }
++    set16(port, kDataReady, 0);
++    set16(port, kState, 7);
++    set32(port, kRetries, u32(port, kRetries) + 1);
++    if (++r.update_fails >= 10) {
++        r.update_fails = 0;
++        start_query(port);
++    }
++}
++
++// The query, one command per frame (PADMAN's 0x4C4E0).
++enum QueryStep : std::uint16_t { qFind, qEnter, qModel, qDigital, qActuators, qCombinations, qModes, qAlign, qMask, qExit, qFinal };
++
++void query_step(int port) {
++    Run &r = g_ports[port].run;
++    if (r.query_pending) {
++        r.query_pending = 0;
++        query_reset(port);
++    }
++    switch (r.step) {
++    case qFind:
++        if (find(port)) {
++            r.found = u8(port, kModeId);
++            set8(port, kModeId, 0);
++            set16(port, kState, 5);
++            if (u8(port, kFirstFind)) std::memset(slot(port) + kAlign, 0xFF, 6);
++            next(r, qEnter);
++        } else {
++            set16(port, kState, 0);
++            set8(port, kFirstFind, 1);
++        }
++        return;
++    case qEnter:
++        if (enter_config(port, r.found)) {
++            set8(port, kConfigured, 2);
++            next(r, qModel);
++        } else if (++r.tries >= 10) {
++            set8(port, kConfigured, 1);
++            set8(port, kModeId, r.found);
++            set16(port, kCurrentTask, kUpdate);
++        }
++        return;
++    case qModel:
++        if (model(port)) {
++            next(r, u8(port, kFirstFind) == 1 && u8(port, kModeOffset) != 0 ? qDigital : qActuators);
++            if (r.step == qDigital) {
++                set8(port, kMainModeArg, 0);
++                set8(port, kLockArg, 0);
++            }
++        } else {
++            give_up(port, 0, true);
++        }
++        return;
++    case qDigital:
++        if (set_main_mode(port)) {
++            set8(port, kModeId, 0);
++            set16(port, kCurrentTask, kUpdate);
++            set8(port, kFirstFind, 0);
++        } else if (give_up(port, 1, false)) {
++        }
++        return;
++    default: break;
++    }
++    // The table steps: each runs once per item, skipped when there are none.
++    auto table_step = [&](std::uint16_t step, std::uint8_t count, std::uint8_t cmd, std::uint16_t after) {
++        if (r.step != step) return false;
++        if (r.item >= count) {
++            next(r, after);
++            return false;  // nothing sent this frame for an empty table: fall through to the next step
++        }
++        if (table(port, cmd, static_cast<std::uint8_t>(r.item))) {
++            r.tries = 0;
++            if (++r.item >= count) next(r, after);
++        } else {
++            give_up(port, 0, true);
++        }
++        return true;
++    };
++    if (table_step(qActuators, u8(port, kActuators), 0x46, qCombinations)) return;
++    if (table_step(qCombinations, u8(port, kCombinations), 0x47, qModes)) return;
++    if (table_step(qModes, u8(port, kModes), 0x4C, qAlign)) return;
++    switch (r.step) {
++    case qAlign:
++        if (set_align(port)) next(r, u8(port, kConfigured) == 2 && (u8(port, kModel) & 2u) ? qMask : qExit);
++        else give_up(port, 1, false);
++        return;
++    case qMask:
++        if (button_mask(port)) next(r, qExit);
++        else give_up(port, 0, true);
++        return;
++    case qExit:
++        if (exit_config(port)) next(r, qFinal);
++        else give_up(port, 0, true);
++        return;
++    case qFinal:
++        if (find(port)) {
++            const std::uint8_t id = u8(port, kModeId);
++            set16(port, kState, 5);
++            set16(port, kCurrentTask, kUpdate);
++            set8(port, kFirstFind, 0);
++            set8(port, kModeId, id);
++        } else {
++            give_up(port, 0, true);
++        }
++        return;
++    default: return;
++    }
++}
++
++// The settings tasks: enter config, their command(s), exit config, one per frame.
++void settings_step(int port, std::uint16_t task) {
++    Run &r = g_ports[port].run;
++    if (r.step == 0 && r.item == 0 && r.tries == 0 && !r.found) {
++        // First frame of the task: no data while it runs.
++        set16(port, kDataReady, 0);
++        set16(port, kState, 5);
++        r.found = 1;
++    }
++    auto finish = [&] {
++        if (task == kButtonInfo) set16(port, kButtonInfoDone, 1);
++        set16(port, kCurrentTask, kUpdate);
++        r.found = 0;
++    };
++    auto fail = [&] {
++        if (++r.tries >= 10) {
++            set16(port, kRequestState, 1);
++            set16(port, kCurrentTask, kUpdate);
++            r.found = 0;
++        }
++    };
++    switch (r.step) {
++    case 0:
++        if (enter_config(port, u8(port, kModeId))) next(r, 1);
++        else fail();
++        return;
++    case 1: {
++        bool ok = false;
++        if (task == kMainMode) ok = set_main_mode(port);
++        else if (task == kActAlign) ok = set_align(port);
++        else if (task == kButtonInfo) ok = set_buttons(port);
++        if (ok) next(r, task == kButtonInfo ? 2 : 3);
++        else fail();
++        return;
++    }
++    case 2:
++        if (set_vref(port, static_cast<std::uint8_t>(r.item))) {
++            r.tries = 0;
++            if (++r.item >= 12) next(r, 3);
++        } else {
++            fail();
++        }
++        return;
++    case 3:
++        if (exit_config(port)) finish();
++        else fail();
++        return;
++    default: return;
++    }
++}
++
++// The block the EE reads, from the slot's fields (PADMAN's 0x4A248), and its copy to the EE.
++void build_block(int port) {
++    std::uint8_t *s = slot(port);
++    const std::uint32_t frame = u32(port, kFrame);
++    set32(port, kFrame, frame + 1);
++    set32(port, 88, frame);
++    set32(port, 92, u32(port, kRetries));
++    s[100] = s[kConfigured];
++    s[101] = s[kModeId];
++    s[102] = s[kModel];
++    s[103] = s[kDataReady];
++    s[104] = s[kModes];
++    s[105] = s[kModeOffset];
++    s[106] = s[kActuators];
++    s[107] = s[kCombinations];
++    s[108] = s[kButtonInfoDone];
++    s[109] = s[kMainModeArg];
++    s[110] = s[kLockArg];
++    s[111] = s[kActDirectSize];
++    s[112] = s[kState];
++    s[113] = s[kRequestState];
++    s[114] = s[kCurrentTask];
++    s[115] = s[kRequestedTask];
++    std::memcpy(s + 32, s + kActDirect, 8);
++    std::memcpy(s + 40, s + kAlign, 8);  // the align, then the state again
++    std::memcpy(s + 48, s + kActInfo, 40);
++    s[116] = s[kPortType];
++    std::memcpy(s + 117, s + kButtonMask, 4);
++    std::memcpy(s + 121, s + kButtonsFound, 4);
++    if (u16(port, kDataReady) == 1) {
++        // The data (PADMAN's 0x4DA38): 0, the mode id, the reply after its 0x5A, and the 0x5A last.
++        const std::uint8_t id = s[kModeId];
++        s[0] = 0;
++        s[1] = id;
++        s[31] = s[kData + 2];
++        for (int i = 2; i < 31; ++i) s[i] = s[kData + 1 + i];
++        if (id == 0x12) {
++            s[2] = s[3] = 0xFF;
++            s[4] = s[5] = 0;
++        }
++        if (id == 0x79) {
++            // Each pressure agrees with its button: pressed reads at least 1, released reads 0.
++            const std::uint16_t buttons = static_cast<std::uint16_t>(~((s[2] << 8) | s[3]));
++            static const std::uint16_t kBits[12] = {0x2000, 0x8000, 0x1000, 0x4000, 0x0010, 0x0020, 0x0040, 0x0080, 0x0004, 0x0008, 0x0001, 0x0002};
++            for (int i = 0; i < 12; ++i) {
++                std::uint8_t &p = s[8 + i];
++                if (buttons & kBits[i]) {
++                    if (p == 0) p = 1;
++                } else if (p != 0) {
++                    p = 0;
++                }
++            }
++        }
++        set32(port, 96, 32);
++    } else {
++        set32(port, 96, 0);
++    }
++    const std::uint32_t dst = u32(port, kEeBuffer) + ((frame & 1u) ? 0x80u : 0u);
++    std::memcpy(ps2::g_ram + (dst & (ps2::kRamSize - 1)), s, 0x80);
++    ps2::watch_span(dst, 0x80, "padman:block");
++}
++
++void open_port(int port, std::uint32_t ee_buffer) {
++    std::uint8_t *s = slot(port);
++    std::memset(s, 0, 0x1C4);
++    set16(port, kState, 5);
++    set32(port, kEeBuffer, ee_buffer);
++    set8(port, kFirstFind, 1);
++    set16(port, kCurrentTask, kUpdate);
++    g_ports[port] = Port{};
++    g_ports[port].open = 1;
++    g_ports[port].opened = 1;
++}
++
++// A request from the game (PADMAN's 0x4E27C and its neighbours): accepted when the port is in the
++// update task, has been queried and is not busy.
++bool request(int port, std::uint16_t task) {
++    if (u16(port, kCurrentTask) != kUpdate || u8(port, kConfigured) < 2 || u16(port, kRequestState) == 2) return false;
++    set16(port, kRequestState, 2);
++    set16(port, kRequestedTask, task);
++    g_ports[port].fresh = 1;
++    return true;
++}
++
++bool rpc(std::uint32_t, std::uint32_t args, std::uint32_t args_size, std::uint32_t ret, std::uint32_t ret_size) {
++    // The reply is the request, with the results written into it.
++    std::uint8_t buffer[128] = {};
++    std::memcpy(buffer, ps2::g_ram + (args & (ps2::kRamSize - 1)), std::min<std::uint32_t>(args_size, 128));
++    auto word = [&](int i) {
++        std::uint32_t v;
++        std::memcpy(&v, buffer + i * 4, 4);
++        return v;
++    };
++    auto set_word = [&](int i, std::uint32_t v) { std::memcpy(buffer + i * 4, &v, 4); };
++    const std::uint32_t cmd = word(0);
++    const int port = static_cast<int>(word(1) & 1u);
++    const bool slot0 = word(2) == 0 && word(1) < 2;
++    switch (cmd) {
++    case 0x01:  // open
++        if (slot0) {
++            open_port(port, word(4));
++            set_word(3, 1);
++            set_word(5, slot_address(port) + 0x80);
++        } else {
++            set_word(3, 0);
++        }
++        break;
++    case 0x06:  // set main mode
++        set_word(5, slot0 && word(3) < u8(port, kModes) && request(port, kMainMode) ? (set8(port, kMainModeArg, static_cast<std::uint8_t>(word(3))), set8(port, kLockArg, static_cast<std::uint8_t>(word(4))), 1u) : 0u);
++        break;
++    case 0x08:  // set actuator align
++        if (slot0 && u16(port, kCurrentTask) == kUpdate && u8(port, kConfigured) >= 2 && u16(port, kRequestState) != 2) {
++            std::memcpy(slot(port) + kAlign, buffer + 12, 6);
++            request(port, kActAlign);
++            set_word(5, 1);
++        } else {
++            set_word(5, 0);
++        }
++        break;
++    case 0x07:  // set actuator direct
++        if (slot0 && u8(port, kConfigured) != 1 && u16(port, kCurrentTask) == kUpdate) {
++            std::memcpy(slot(port) + kActDirect, buffer + 12, 6);
++            set16(port, kActDirectSize, 6);
++            set_word(5, 1);
++        } else {
++            set_word(5, 0);
++        }
++        break;
++    case 0x09:  // the buttons the pad reports
++        set_word(3, slot0 && u16(port, kCurrentTask) == kUpdate && u8(port, kConfigured) >= 2 && u8(port, kModel) >= 2 ? u32(port, kButtonsFound) : 0u);
++        break;
++    case 0x0A:  // set button info
++        if (slot0 && u16(port, kCurrentTask) == kUpdate && u8(port, kConfigured) >= 2 && (u8(port, kModel) & 2u) && u16(port, kRequestState) != 2) {
++            set32(port, kButtonMask, (word(3) << 6) | 0x3Fu);
++            std::memset(slot(port) + kVref, 2, 12);
++            request(port, kButtonInfo);
++            set_word(4, 1);
++        } else {
++            set_word(4, 0);
++        }
++        break;
++    case 0x0C: set_word(3, 2); break;  // port max
++    case 0x0D: set_word(3, 1); break;  // slot max: no multitap
++    case 0x10: set_word(3, 1); break;  // init
++    case 0x12: set_word(3, 0x403); break;  // module version
++    case 0x14: set_word(2, 1); break;
++    default:
++        std::fprintf(stderr, "[padman] RPC command 0x%X not handled\n", cmd);
++        break;
++    }
++    std::memcpy(ps2::g_ram + (ret & (ps2::kRamSize - 1)), buffer, std::min<std::uint32_t>(ret_size, 128));
++    return true;
++}
++
++// PADMAN's two servers: the game binds both, and calls only the first; the second answers with the
++// request, as an idle server would.
++void register_servers() {
++    sif::register_hle_server(kServer, rpc);
++    sif::register_hle_server(kServer + 1, [](std::uint32_t method, std::uint32_t args, std::uint32_t args_size, std::uint32_t ret, std::uint32_t ret_size) {
++        std::fprintf(stderr, "[padman] RPC 0x%X to the second server\n", method);
++        std::memmove(ps2::g_ram + (ret & (ps2::kRamSize - 1)), ps2::g_ram + (args & (ps2::kRamSize - 1)), std::min(args_size, ret_size));
++        return true;
++    });
++}
++
++}  // namespace
++
++// On unless PS2_NATIVE_PAD=0, which runs the game's own PADMAN.IRX translated instead (for comparing
++// the two). A save state keeps whichever driver it was saved with.
++bool enabled() {
++    static const bool on = [] {
++        const char *v = std::getenv("PS2_NATIVE_PAD");
++        return !v || v[0] != '0';
++    }();
++    return on;
++}
++
++// Each frame's work comes in two parts, where the translated module did them in normal play (one pad
++// in pressure mode, measured in EE cycles after vblank starts): the requested tasks and the vibration
++// mailbox at about 11,000 (each port's command follows); the blocks at about 40,500. A request the game makes
++// between the two shows in this frame's block and starts next frame; a mailbox write then is read
++// next frame. (The translated module's times move with the transfers: blocks from 33,000 to 62,000.)
++constexpr std::uint64_t kTasksDelay = 1375, kBlocksDelay = 5063;  // IOP cycles (an EE cycle is 1/8)
++
++void tasks();
++void blocks();
++
++void install() {
++    kernel::register_job(kernel::kJobPadmanFrame, [](const kernel::Job &j) {
++        if (j.a == 0) tasks();
++        else blocks();
++    });
++    if (!enabled()) return;
++    kernel::register_hle_module("PADMAN", [] {
++        // Keep PADMAN's memory: the modules after it load where they always do (their translated code
++        // depends on it), and the game writes vibration into it.
++        if (!kernel::alloc(kModuleEnd - kModuleBase, 2, kModuleBase)) std::fprintf(stderr, "[padman] could not keep 0x%X..0x%X\n", kModuleBase, kModuleEnd);
++        std::memset(ram_ptr(kModuleBase), 0, kModuleEnd - kModuleBase);
++        g_ports[0] = Port{};
++        g_ports[1] = Port{};
++        g_installed = true;
++        register_servers();
++        std::fprintf(stderr, "[padman] native\n");
++    });
++}
++
++void vblank() {
++    if (!g_installed) return;
++    kernel::schedule(kernel::now() + kTasksDelay, kernel::Job{kernel::kJobPadmanFrame, 0});
++    kernel::schedule(kernel::now() + kBlocksDelay, kernel::Job{kernel::kJobPadmanFrame, 1});
++}
++
++void tasks() {
++    if (!g_installed) return;
++    for (int port = 0; port < 2; ++port) {
++        Port &p = g_ports[port];
++        if (!p.open || p.opened) continue;
++        // A requested task starts (the request has waited a frame, as the module's RPC thread made it).
++        const std::uint16_t requested = u16(port, kRequestedTask);
++        if (requested && !p.fresh) {
++            if (u16(port, kCurrentTask) == kUpdate) {
++                set16(port, kCurrentTask, requested);
++                set16(port, kRequestedTask, 0);
++                set16(port, kRequestState, 2);
++                p.run = Run{};
++            } else {
++                set16(port, kRequestedTask, 0);
++                set16(port, kRequestState, 1);
++            }
++        }
++        switch (u16(port, kCurrentTask)) {
++        case kUpdate: update_step(port); break;
++        case kQuery: query_step(port); break;
++        case kMainMode: case kActAlign: case kButtonInfo: settings_step(port, u16(port, kCurrentTask)); break;
++        default: break;
++        }
++    }
++}
++
++void blocks() {
++    if (!g_installed) return;
++    for (int port = 0; port < 2; ++port) {
++        if (!g_ports[port].open) continue;
++        build_block(port);
++        g_ports[port].fresh = 0;
++        g_ports[port].opened = 0;
++    }
++}
++
++void state(ps2::state::Stream &s) {
++    s.tag("padman");
++    s.pod(g_installed);
++    s.pod(g_ports);
++    if (s.loading() && g_installed) register_servers();
++}
++
++}
+diff --git a/runtime/src/iop/padman.hpp b/runtime/src/iop/padman.hpp
+new file mode 100644
+index 0000000..2bcbee5
+--- /dev/null
++++ b/runtime/src/iop/padman.hpp
+@@ -0,0 +1,22 @@
++#pragma once
++
++namespace ps2::state {
++class Stream;
++}
++
++namespace ps2::iop::padman {
++
++// The game's pad driver (PADMAN.IRX) in native code, in place of its translated module: the libpad RPC
++// server (0x80000100) and, each frame, one command per open port to its DualShock and the 128-byte
++// state block copied to the EE. It keeps each port's state where PADMAN keeps it, in IOP memory, at
++// the same addresses and offsets, so the game's own writes there (vibration) land as they always did.
++// Installed when the game loads PADMAN.IRX (unless PS2_NATIVE_PAD=0). Checked against the translated
++// module block by block: boot, every button and stick, a pad plugged into port 2 and pulled out, and
++// save states; vibration through the same mailbox.
++void install();
++bool enabled();
++// Each frame, at the start of vblank.
++void vblank();
++void state(ps2::state::Stream &s);
++
++}
 diff --git a/runtime/src/iop/sif.cpp b/runtime/src/iop/sif.cpp
-index 710e6b3..1c51f3e 100644
+index 710e6b3..11b2b2a 100644
 --- a/runtime/src/iop/sif.cpp
 +++ b/runtime/src/iop/sif.cpp
-@@ -152,6 +152,31 @@ void call(const std::uint8_t *packet) {
+@@ -1,5 +1,7 @@
+ #include "sif.hpp"
+ 
++#include "padman.hpp"
++
+ #include "../hw.hpp"
+ #include "iop.hpp"
+ #include "io.hpp"
+@@ -152,6 +154,31 @@ void call(const std::uint8_t *packet) {
      Call c;
      std::memcpy(&c, packet, sizeof c);
      const std::uint32_t server = c.server_data ^ kServerXor;
@@ -4457,7 +5258,7 @@ index 710e6b3..1c51f3e 100644
      auto it = g_servers.find(server);
      if (it == g_servers.end()) {
          std::fprintf(stderr, "[sif] call %u to unknown server 0x%08X\n", c.rpc_number, server);
-@@ -770,6 +795,32 @@ std::uint32_t set_dma(std::uint32_t transfers, std::uint32_t count) {
+@@ -770,6 +797,32 @@ std::uint32_t set_dma(std::uint32_t transfers, std::uint32_t count) {
              // carries the rest of its last quadword. Sound drivers keep a ready flag there.
              const std::uint32_t moved = std::min({(size + 15u) & ~15u, iop::kRamSize - (iop::phys(dst) & (iop::kRamSize - 1)), kRamSize - src});
              std::memcpy(iop::ram_ptr(dst), g_ram + src, moved);
@@ -4490,6 +5291,199 @@ index 710e6b3..1c51f3e 100644
          }
      }
      g_ee_dma_done = std::max(g_ee_dma_done, now()) + 256u + bytes * 2u;
+@@ -854,6 +907,7 @@ void install_sif() {
+     sif::install_iop_side();
+     sif::install_servers();
+     install_cdvdfsv();
++    padman::install();
+ }
+ 
+ }
+diff --git a/runtime/src/iop/sio2.cpp b/runtime/src/iop/sio2.cpp
+index aff8342..b82a49e 100644
+--- a/runtime/src/iop/sio2.cpp
++++ b/runtime/src/iop/sio2.cpp
+@@ -21,66 +21,18 @@ namespace {
+ 
+ constexpr std::uint8_t kDigital = 0x41, kAnalog = 0x73, kPressure = 0x79, kConfig = 0xF3;
+ 
+-struct Pad {
+-    bool connected = false;
+-    std::uint16_t buttons = 0;
+-    std::uint8_t axes[4] = {0x80, 0x80, 0x80, 0x80};
+-    std::uint8_t mode = kDigital;
+-    bool config = false;
+-    bool locked = false;
+-    std::uint8_t poll_mask[3] = {0xFF, 0xFF, 0x03};
+-};
+-
+ constexpr std::uint8_t kLibpadMotors[6] = {0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF};
+ 
+-struct Feel {
+-    std::uint8_t motors[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+-    std::uint8_t pressure[16] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+-    std::atomic<std::uint16_t> rumble{0};
+-};
+-
+-struct Dma {
+-    bool armed = false;
+-    std::uint32_t madr = 0, block_words = 0, blocks = 0;
+-};
+-
+-constexpr std::uint32_t kPageBytes = 528, kPages = 0x4000, kBlockPages = 16;
+-constexpr std::size_t kCardBytes = static_cast<std::size_t>(kPageBytes) * kPages;
+-
+-struct Card {
+-    bool present = false;
+-    std::vector<std::uint8_t> data;
+-    std::size_t address = 0;
+-    std::uint8_t term = 0x55;
+-    bool dirty = false;
+-    std::uint32_t quiet = 0;
+-};
+-
+-std::uint32_t g_send3[16];
+-std::uint32_t g_ctrl1[4], g_ctrl2[4];
+-std::uint32_t g_index = 0;
+-std::uint32_t g_stat = 0;
+-std::deque<std::uint8_t> g_in, g_out;
+-Pad g_pads[2];
+-// which ports the host has a controller in; kept out of save states so loading one does not unplug a pad
+-bool g_plugged[2] = {true, false};
+-Feel g_feel[2];
+-Card g_card;
+-Dma g_dma[2];
+-
+-void no_device() { g_stat |= 0xC000u | (0x10000u << (g_index & 15u)); }
++}  // namespace
+ 
+-void controller(int port, std::size_t at, std::uint32_t out_size) {
+-    const std::vector<std::uint8_t> in(g_in.begin(), g_in.end());
+-    if (port > 1 || !g_pads[port].connected || in.empty() || in[0] != 0x01) {
+-        no_device();
+-        return;
+-    }
+-    Pad &p = g_pads[port];
+-    Feel &f = g_feel[port];
++// The DualShock 2's answer to one command, as SIO2 hands it over: in, the bytes sent; out, the reply
++// (out_size bytes, unwritten ones left as they are). False when nothing answers.
++bool answer(Pad &p, Feel &f, const std::uint8_t *in_bytes, std::size_t in_size, std::uint8_t *out, std::size_t out_size) {
++    if (!p.connected || in_size == 0 || in_bytes[0] != 0x01) return false;
++    const std::vector<std::uint8_t> in(in_bytes, in_bytes + in_size);
+     const std::uint8_t cmd = in.size() > 1 ? in[1] : 0;
+     auto put = [&](std::size_t i, std::uint8_t v) {
+-        if (i < out_size) g_out[at + i] = v;
++        if (i < out_size) out[i] = v;
+     };
+     put(0, 0xFF);
+     put(1, p.config ? kConfig : p.mode);
+@@ -164,6 +116,50 @@ void controller(int port, std::size_t at, std::uint32_t out_size) {
+         data();
+         break;
+     }
++    return true;
++}
++
++namespace {
++
++struct Dma {
++    bool armed = false;
++    std::uint32_t madr = 0, block_words = 0, blocks = 0;
++};
++
++constexpr std::uint32_t kPageBytes = 528, kPages = 0x4000, kBlockPages = 16;
++constexpr std::size_t kCardBytes = static_cast<std::size_t>(kPageBytes) * kPages;
++
++struct Card {
++    bool present = false;
++    std::vector<std::uint8_t> data;
++    std::size_t address = 0;
++    std::uint8_t term = 0x55;
++    bool dirty = false;
++    std::uint32_t quiet = 0;
++};
++
++std::uint32_t g_send3[16];
++std::uint32_t g_ctrl1[4], g_ctrl2[4];
++std::uint32_t g_index = 0;
++std::uint32_t g_stat = 0;
++std::deque<std::uint8_t> g_in, g_out;
++Pad g_pads[2];
++// which ports the host has a controller in; kept out of save states so loading one does not unplug a pad
++bool g_plugged[2] = {true, false};
++Feel g_feel[2];
++Card g_card;
++Dma g_dma[2];
++
++void no_device() { g_stat |= 0xC000u | (0x10000u << (g_index & 15u)); }
++
++void controller(int port, std::size_t at, std::uint32_t out_size) {
++    const std::vector<std::uint8_t> in(g_in.begin(), g_in.end());
++    std::vector<std::uint8_t> out(out_size, 0xFF);
++    if (port > 1 || !answer(g_pads[port], g_feel[port], in.data(), in.size(), out.data(), out.size())) {
++        no_device();
++        return;
++    }
++    for (std::uint32_t i = 0; i < out_size; ++i) g_out[at + i] = out[i];
+ }
+ 
+ std::uint8_t xor_of(const std::uint8_t *p, std::size_t n) {
+@@ -417,6 +413,9 @@ void set_connected(int pad, bool connected) {
+ 
+ std::uint16_t rumble(int pad) { return pad >= 0 && pad < 2 ? g_feel[pad].rumble.load(std::memory_order_relaxed) : 0; }
+ 
++Pad &pad(int port) { return g_pads[port & 1]; }
++Feel &feel(int port) { return g_feel[port & 1]; }
++
+ }
+ 
+ namespace ps2::iop::sio2 {
+diff --git a/runtime/src/iop/sio2.hpp b/runtime/src/iop/sio2.hpp
+index 1068dad..0f058cb 100644
+--- a/runtime/src/iop/sio2.hpp
++++ b/runtime/src/iop/sio2.hpp
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <atomic>
++#include <cstddef>
+ #include <cstdint>
+ 
+ namespace ps2::state {
+@@ -8,6 +10,33 @@ class Stream;
+ 
+ namespace ps2::iop::sio2 {
+ 
++// A DualShock 2: what the host feeds it (connected, buttons, sticks) and how it is set up (mode,
++// config, poll mask). The layout is part of save states.
++struct Pad {
++    bool connected = false;
++    std::uint16_t buttons = 0;
++    std::uint8_t axes[4] = {0x80, 0x80, 0x80, 0x80};
++    std::uint8_t mode = 0x41;
++    bool config = false;
++    bool locked = false;
++    std::uint8_t poll_mask[3] = {0xFF, 0xFF, 0x03};
++};
++
++// The rest of it, kept out of save states: its motor map, button pressures, and the rumble it was last
++// told to give.
++struct Feel {
++    std::uint8_t motors[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
++    std::uint8_t pressure[16] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
++    std::atomic<std::uint16_t> rumble{0};
++};
++
++// The controller's answer to one command exchange (in: the bytes sent; out: the reply, out_size
++// bytes). False when nothing answers. SIO2 uses it for its transfers, the native pad driver directly.
++bool answer(Pad &p, Feel &f, const std::uint8_t *in, std::size_t in_size, std::uint8_t *out, std::size_t out_size);
++// The controllers on the two ports.
++Pad &pad(int port);
++Feel &feel(int port);
++
+ void state(ps2::state::Stream &s);
+ 
+ void reset();
 diff --git a/runtime/src/iop/spu2.cpp b/runtime/src/iop/spu2.cpp
 index 913db60..c0898fb 100644
 --- a/runtime/src/iop/spu2.cpp
@@ -4949,7 +5943,7 @@ index 7a0699c..3b48d93 100644
              g_watch_on = true;
              std::fprintf(stderr, "[watch] writes to 0x%08X..0x%08X will print\n", g_watch_base, g_watch_end);
 diff --git a/runtime/src/system.cpp b/runtime/src/system.cpp
-index 86f8ca9..5af9500 100644
+index 86f8ca9..f4d78c2 100644
 --- a/runtime/src/system.cpp
 +++ b/runtime/src/system.cpp
 @@ -15,6 +15,7 @@
@@ -5017,7 +6011,7 @@ index 86f8ca9..5af9500 100644
  
  constexpr char kStateMagic[8] = {'P', 'S', '2', 'S', 'T', 'A', 'T', 'E'};
 -constexpr std::uint32_t kStateVersion = 6;
-+constexpr std::uint32_t kStateVersion = 7;
++constexpr std::uint32_t kStateVersion = 8;
  
  std::function<void()> event_action(int id, std::uint64_t at) {
      if (id == hw::kEventVblank) return vblank;

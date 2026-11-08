@@ -128,9 +128,9 @@ your disc ──► launcher ──► eerecomp ──► C++ ──► clang �
   same for the game's VU1 and VU0 microcode (this port added VU0). Its runtime provides the rest
   of the PS2: a GS renderer on the GPU (wgpu: Direct3D 12 or Vulkan), the IPU (video), SPU2
   (sound), the IOP and the memory card. This port adds Windows support on top of it.
-- **The IOP**, the PS2's second processor, runs the game's sound, controller and memory card
-  drivers: modules on the disc (`IOP\*.IRX`). This port adds `ioprecomp`, which translates them to
-  C++ too: the build relocates each module to the address it always loads at (`iop.txt`), and
+- **The IOP**, the PS2's second processor, runs the game's sound and memory card drivers: modules
+  on the disc (`IOP\*.IRX`). The controller driver (PADMAN.IRX) is native code in the runtime
+  instead. This port adds `ioprecomp`, which translates the others to C++ too: the build relocates each module to the address it always loads at (`iop.txt`), and
   the runtime uses that code when the module loads there unchanged, else its interpreter. The
   IOP's kernel is the runtime's own native code.
 - **`CastlevaniaLoI.exe`** holds the launcher and the runtime, with no game code inside. It
