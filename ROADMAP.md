@@ -137,6 +137,21 @@ resumes in the middle of a block.
     - gameplay: 10.1 ms per frame at 1x, 11.6 ms at 6x;
     - effects: about 0.05–0.12 ms each set.
   - Design: [docs/superpowers/specs/2026-11-07-graphics-options-design.md](docs/superpowers/specs/2026-11-07-graphics-options-design.md).
+- **Done: widescreen and picture polish, part 1.**
+  - Bloom is stronger and wider: a lower, soft threshold, a quarter-size buffer and three blur rounds.
+  - In 16:9, banners drawn across the 4:3 width reach the screen edges: the pause menu's top ornament
+    and the map's bottom bar. Their end tiles are carried on by mirrored copies.
+- **Later: widescreen and picture polish, part 2.**
+  1. Item-pickup message background: should fill the 16:9 screen, not stay 4:3. Not looked at yet: it
+     needs a scene near an item.
+  2. Map screen background: in 16:9 it shows gaps at the sides. Behind the map the game blends a
+     snapshot of the room with a live render, and it culls the live render to its 4:3 view: the fix is
+     a patch to the game's culling code. PCSX2's widescreen patch has none.
+  3. The game's blur (entering a room, behind the map) looks pixelated at high resolutions. The game
+     copies the screen at half height and stretches it back; at 5x those copies keep fine detail, which
+     stripes. Tried and set aside: drawing the copies at the PS2's own resolution (no stripes, but a
+     512x224 buffer stretched 8-10x shows its grid), plus a cubic filter (smooth, but about 18 ms per
+     frame at 5x). A cheaper way is still to find.
 - **Notes:**
   - Native draws are by far the hardest part.
   - Before this work the port had always run on Vulkan: Direct3D 12 crashed in Windows' FXC shader

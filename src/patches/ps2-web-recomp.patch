@@ -2414,15 +2414,15 @@ index 6ef5e1a..3395cbb 100644
  void render_reset();
 diff --git a/runtime/src/gs/gpu/effects.wgsl b/runtime/src/gs/gpu/effects.wgsl
 new file mode 100644
-index 0000000..bc6da72
+index 0000000..83339ad
 --- /dev/null
 +++ b/runtime/src/gs/gpu/effects.wgsl
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,239 @@
 +// Picture effects on the final picture (the player's graphics options), after blit.wgsl has drawn the
 +// game picture into an offscreen texture the size of the window's picture area. Every effect is off
 +// unless its flag is set; with all of them off, gpu.cpp skips this file entirely.
 +//   easu: the FSR-style upscale, from the picture at its internal resolution to the window's size
-+//   bright, blur_h, blur_v: bloom's bright-pass and Gaussian blur, at half resolution
++//   bright, blur_*: bloom's bright-pass and Gaussian blur rounds, at quarter size
 +//   post: in this order, CRT curvature (it bends where everything is read), sharpening, bloom added back,
 +//         colour, debanding, CRT scanlines and mask, vignette, film grain; written to the window
 +
@@ -2468,16 +2468,46 @@ index 0000000..bc6da72
 +
 +fn luma(c: vec3<f32>) -> f32 { return dot(c, vec3<f32>(0.299, 0.587, 0.114)); }
 +
-+// Bloom: the parts brighter than luma 0.7, ramping in to full above it.
++// Bloom's bright-pass, into a quarter-size buffer: the average of the 4x4 picture pixels under each texel
++// (four bilinear taps, so small lights don't flicker), kept by a soft knee from luma 0.25 to full at 0.75.
++// The game is dark: a high threshold left only flame cores, and the bloom barely showed.
 +@fragment
 +fn bright(in: VertexOut) -> @location(0) vec4<f32> {
-+    let c = at(source, in.uv);
-+    let k = clamp((luma(c) - 0.7) / 0.3, 0.0, 1.0);
++    let t = 1.0 / vec2<f32>(textureDimensions(source));
++    let c = (at(source, in.uv + vec2<f32>(-t.x, -t.y)) + at(source, in.uv + vec2<f32>(t.x, -t.y)) +
++             at(source, in.uv + vec2<f32>(-t.x, t.y)) + at(source, in.uv + vec2<f32>(t.x, t.y))) * 0.25;
++    let k = smoothstep(0.25, 0.75, luma(c));
 +    return vec4<f32>(c * k, 1.0);
 +}
 +
-+// A 9-tap Gaussian (sigma about 2 texels), one direction per pass.
++// A 9-tap Gaussian (sigma about 2 texels), one direction per pass. Bloom runs it three times, at a
++// one-, two- and four-texel step (blur_*, blur_wide_*, blur_wider_*): a glow with a sigma of about 9
++// quarter-size texels, about 2% of the picture's width.
 +const kWeights = array<f32, 5>(0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
++
++@fragment
++fn blur_wide_h(in: VertexOut) -> @location(0) vec4<f32> {
++    let size = vec2<f32>(textureDimensions(source));
++    return vec4<f32>(blur(in.uv, vec2<f32>(2.0 / size.x, 0.0)), 1.0);
++}
++
++@fragment
++fn blur_wide_v(in: VertexOut) -> @location(0) vec4<f32> {
++    let size = vec2<f32>(textureDimensions(source));
++    return vec4<f32>(blur(in.uv, vec2<f32>(0.0, 2.0 / size.y)), 1.0);
++}
++
++@fragment
++fn blur_wider_h(in: VertexOut) -> @location(0) vec4<f32> {
++    let size = vec2<f32>(textureDimensions(source));
++    return vec4<f32>(blur(in.uv, vec2<f32>(4.0 / size.x, 0.0)), 1.0);
++}
++
++@fragment
++fn blur_wider_v(in: VertexOut) -> @location(0) vec4<f32> {
++    let size = vec2<f32>(textureDimensions(source));
++    return vec4<f32>(blur(in.uv, vec2<f32>(0.0, 4.0 / size.y)), 1.0);
++}
 +
 +fn blur(uv: vec2<f32>, dir: vec2<f32>) -> vec3<f32> {
 +    var c = at(source, uv) * kWeights[0];
@@ -2602,7 +2632,7 @@ index 0000000..bc6da72
 +    }
 +    var c = at(source, uv);
 +    if ((post.flags & 1u) != 0u) { c = sharpened(uv); }
-+    if ((post.flags & 2u) != 0u) { c = c + at(glow, uv) * post.bloom; }
++    if ((post.flags & 2u) != 0u) { c = c + at(glow, uv) * (2.5 * post.bloom); }
 +    if ((post.flags & 4u) != 0u) {
 +        c = (c - 0.5) * post.contrast + 0.5 + post.brightness;
 +        c = mix(vec3<f32>(luma(c)), c, post.saturation);
@@ -2628,7 +2658,7 @@ index 0000000..bc6da72
 +    return vec4<f32>(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 +}
 diff --git a/runtime/src/gs/gpu/gpu.cpp b/runtime/src/gs/gpu/gpu.cpp
-index 5a13c3e..2080591 100644
+index 5a13c3e..e912db7 100644
 --- a/runtime/src/gs/gpu/gpu.cpp
 +++ b/runtime/src/gs/gpu/gpu.cpp
 @@ -1,4 +1,5 @@
@@ -2774,7 +2804,7 @@ index 5a13c3e..2080591 100644
  void ensure_capacity() {
      bool changed = false;
      const std::uint64_t data_bytes = std::max<std::uint64_t>(g_arena.size() * 4, 16);
-@@ -911,6 +1010,223 @@ void profile_submit() {
+@@ -911,6 +1010,229 @@ void profile_submit() {
      g_clut_loads = 0;
  }
  
@@ -2785,10 +2815,12 @@ index 5a13c3e..2080591 100644
 +};
 +WGPUBindGroupLayout g_fx_layout = nullptr;
 +WGPUPipelineLayout g_fx_pipeline_layout = nullptr;
-+WGPURenderPipeline g_fx_bright = nullptr, g_fx_blur_h = nullptr, g_fx_blur_v = nullptr, g_fx_post = nullptr, g_fx_easu = nullptr;
++WGPURenderPipeline g_fx_bright = nullptr, g_fx_blur_h = nullptr, g_fx_blur_v = nullptr, g_fx_wide_h = nullptr, g_fx_wide_v = nullptr,
++                   g_fx_wider_h = nullptr, g_fx_wider_v = nullptr, g_fx_post = nullptr,
++                   g_fx_easu = nullptr;
 +WGPUSampler g_fx_sampler = nullptr;
 +WGPUBuffer g_fx_params = nullptr;
-+FxTarget g_fx_scene, g_fx_a, g_fx_b, g_fx_lo;  // the picture; bloom's two half-size buffers; the picture at its internal size (FSR)
++FxTarget g_fx_scene, g_fx_a, g_fx_b, g_fx_lo;  // the picture; bloom's two quarter-size buffers; the picture at its internal size (FSR)
 +WGPUBindGroup g_fx_bright_group = nullptr, g_fx_blur_h_group = nullptr, g_fx_blur_v_group = nullptr, g_fx_post_group = nullptr, g_fx_easu_group = nullptr;
 +std::uint32_t g_fx_width = 0, g_fx_height = 0, g_fx_lo_width = 0, g_fx_lo_height = 0;
 +// The displayed picture's size at the internal resolution, from the last present.
@@ -2850,8 +2882,8 @@ index 5a13c3e..2080591 100644
 +        g_fx_easu_group = fx_group(g_fx_lo.view, g_fx_lo.view);
 +    }
 +    g_fx_scene = make_target(w, h);
-+    g_fx_a = make_target(w / 2, h / 2);
-+    g_fx_b = make_target(w / 2, h / 2);
++    g_fx_a = make_target(w / 4, h / 4);
++    g_fx_b = make_target(w / 4, h / 4);
 +    g_fx_bright_group = fx_group(g_fx_scene.view, g_fx_scene.view);
 +    g_fx_blur_h_group = fx_group(g_fx_a.view, g_fx_a.view);
 +    g_fx_blur_v_group = fx_group(g_fx_b.view, g_fx_b.view);
@@ -2909,6 +2941,10 @@ index 5a13c3e..2080591 100644
 +            fx_pass(enc, g_fx_a.view, g_fx_bright, g_fx_bright_group);
 +            fx_pass(enc, g_fx_b.view, g_fx_blur_h, g_fx_blur_h_group);
 +            fx_pass(enc, g_fx_a.view, g_fx_blur_v, g_fx_blur_v_group);
++            fx_pass(enc, g_fx_b.view, g_fx_wide_h, g_fx_blur_h_group);
++            fx_pass(enc, g_fx_a.view, g_fx_wide_v, g_fx_blur_v_group);
++            fx_pass(enc, g_fx_b.view, g_fx_wider_h, g_fx_blur_h_group);
++            fx_pass(enc, g_fx_a.view, g_fx_wider_v, g_fx_blur_v_group);
 +        }
 +    }
 +    WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
@@ -2998,7 +3034,7 @@ index 5a13c3e..2080591 100644
  // Browsers copy writes above about 1 MiB through a slower path, so large uploads go in pieces.
  void submit(WGPUTextureView present_view = nullptr) {
      if (g_commands.empty() && !present_view) return;
-@@ -962,26 +1278,7 @@ void submit(WGPUTextureView present_view = nullptr) {
+@@ -962,26 +1284,7 @@ void submit(WGPUTextureView present_view = nullptr) {
          wgpuCommandEncoderResolveQuerySet(enc, g_queries, 0, 2, g_query_resolve, 0);
          wgpuCommandEncoderCopyBufferToBuffer(enc, g_query_resolve, 0, g_query_read, 0, 16);
      }
@@ -3026,7 +3062,7 @@ index 5a13c3e..2080591 100644
      WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
      wgpuQueueSubmit(g_queue, 1, &cmd);
      wgpuCommandBufferRelease(cmd);
-@@ -1164,34 +1461,94 @@ void attrs(std::uint32_t *rec, int n, const Vertex &v, bool fst, const Vertex *c
+@@ -1164,34 +1467,94 @@ void attrs(std::uint32_t *rec, int n, const Vertex &v, bool fst, const Vertex *c
  
  Mode mode() { return g_mode; }
  
@@ -3143,7 +3179,7 @@ index 5a13c3e..2080591 100644
      if (!adapter) {
          std::fprintf(stderr, "[gpu] no adapter\n");
          return false;
-@@ -1199,6 +1556,7 @@ bool init(Mode m) {
+@@ -1199,6 +1562,7 @@ bool init(Mode m) {
      WGPUAdapterInfo info = WGPU_ADAPTER_INFO_INIT;
      if (wgpuAdapterGetInfo(adapter, &info) == WGPUStatus_Success) {
          std::fprintf(stderr, "[gpu] %.*s (%.*s)\n", static_cast<int>(info.device.length), info.device.data, static_cast<int>(info.description.length), info.description.data);
@@ -3151,7 +3187,7 @@ index 5a13c3e..2080591 100644
          wgpuAdapterInfoFreeMembers(info);
      }
      WGPULimits supported = WGPU_LIMITS_INIT;
-@@ -1240,24 +1598,21 @@ bool init(Mode m) {
+@@ -1240,24 +1604,21 @@ bool init(Mode m) {
              g_profile_to = z;
          }
      }
@@ -3182,7 +3218,7 @@ index 5a13c3e..2080591 100644
      if (g_timestamps) {
          WGPUQuerySetDescriptor qd = WGPU_QUERY_SET_DESCRIPTOR_INIT;
          qd.type = WGPUQueryType_Timestamp;
-@@ -1287,26 +1642,10 @@ bool init(Mode m) {
+@@ -1287,26 +1648,10 @@ bool init(Mode m) {
      pld.bindGroupLayoutCount = 1;
      pld.bindGroupLayouts = &g_layout;
      g_pipeline_layout = wgpuDeviceCreatePipelineLayout(g_device, &pld);
@@ -3213,7 +3249,7 @@ index 5a13c3e..2080591 100644
      ensure_capacity();
      g_mode = m;
      return true;
-@@ -1679,6 +2018,18 @@ void write_state(const std::vector<std::uint32_t> &vram, std::uint32_t scale, co
+@@ -1679,6 +2024,18 @@ void write_state(const std::vector<std::uint32_t> &vram, std::uint32_t scale, co
      wait_idle();
  }
  
@@ -3232,7 +3268,7 @@ index 5a13c3e..2080591 100644
  void stats() {
      if (g_mode == Mode::off) return;
      std::fprintf(stderr, "[gpu] %llu submits, dispatches:", static_cast<unsigned long long>(g_submits));
-@@ -1698,6 +2049,172 @@ void configure_surface() {
+@@ -1698,6 +2055,176 @@ void configure_surface() {
      wgpuSurfaceConfigure(g_surface, &config);
  }
  
@@ -3379,6 +3415,10 @@ index 5a13c3e..2080591 100644
 +    g_fx_bright = pipeline("bright");
 +    g_fx_blur_h = pipeline("blur_h");
 +    g_fx_blur_v = pipeline("blur_v");
++    g_fx_wide_h = pipeline("blur_wide_h");
++    g_fx_wide_v = pipeline("blur_wide_v");
++    g_fx_wider_h = pipeline("blur_wider_h");
++    g_fx_wider_v = pipeline("blur_wider_v");
 +    g_fx_post = pipeline("fs_post");
 +    g_fx_easu = pipeline("easu");
 +    wgpuShaderModuleRelease(module);
@@ -3405,7 +3445,7 @@ index 5a13c3e..2080591 100644
  bool attach_surface(const SurfaceTarget &target) {
      if (g_mode != Mode::primary || !g_device) return false;
      WGPUSurfaceDescriptor sd = WGPU_SURFACE_DESCRIPTOR_INIT;
-@@ -1709,7 +2226,12 @@ bool attach_surface(const SurfaceTarget &target) {
+@@ -1709,7 +2236,12 @@ bool attach_surface(const SurfaceTarget &target) {
      WGPUSurfaceSourceXlibWindow xlib = WGPU_SURFACE_SOURCE_XLIB_WINDOW_INIT;
      WGPUSurfaceSourceWaylandSurface wayland = WGPU_SURFACE_SOURCE_WAYLAND_SURFACE_INIT;
      WGPUSurfaceSourceMetalLayer metal = WGPU_SURFACE_SOURCE_METAL_LAYER_INIT;
@@ -3419,7 +3459,7 @@ index 5a13c3e..2080591 100644
          metal.layer = target.surface;
          sd.nextInChain = &metal.chain;
      } else if (target.kind == SurfaceTarget::X11) {
-@@ -1738,10 +2260,15 @@ bool attach_surface(const SurfaceTarget &target) {
+@@ -1738,10 +2270,15 @@ bool attach_surface(const SurfaceTarget &target) {
              g_surface_format = caps.formats[i];
              break;
          }
@@ -3439,7 +3479,7 @@ index 5a13c3e..2080591 100644
      wgpuSurfaceCapabilitiesFreeMembers(caps);
      g_surface_width = target.width;
      g_surface_height = target.height;
-@@ -1783,19 +2310,10 @@ bool attach_surface(const SurfaceTarget &target) {
+@@ -1783,19 +2320,10 @@ bool attach_surface(const SurfaceTarget &target) {
      wgpuShaderModuleRelease(module);
      wgpuPipelineLayoutRelease(pipeline_layout);
      g_blit_params = make_buffer(32, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
@@ -3463,7 +3503,7 @@ index 5a13c3e..2080591 100644
      return g_blit != nullptr;
  }
  
-@@ -1804,12 +2322,78 @@ void resize_surface(std::uint32_t width, std::uint32_t height) {
+@@ -1804,12 +2332,78 @@ void resize_surface(std::uint32_t width, std::uint32_t height) {
      g_surface_width = width;
      g_surface_height = height;
      configure_surface();
@@ -3542,7 +3582,7 @@ index 5a13c3e..2080591 100644
      flush_all();
      const std::uint32_t current = field_base(g_field), previous = field_base(g_field + 1);
      static const bool weave_off = std::getenv("PS2_NO_DEINTERLACE") != nullptr;
-@@ -1819,8 +2403,17 @@ bool present(const DisplaySource &src) {
+@@ -1819,8 +2413,17 @@ bool present(const DisplaySource &src) {
      const float sw = static_cast<float>(g_surface_width), sh = static_cast<float>(g_surface_height);
      const float aspect = g_options.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
      const float vw = std::min(sw, sh * aspect), vh = vw / aspect;
@@ -3561,7 +3601,7 @@ index 5a13c3e..2080591 100644
      ++g_field;
      g_have_previous = true;
      g_last_width = src.width;
-@@ -1833,8 +2426,27 @@ bool present(const DisplaySource &src) {
+@@ -1833,8 +2436,27 @@ bool present(const DisplaySource &src) {
          configure_surface();
          return true;
      }
@@ -3589,7 +3629,7 @@ index 5a13c3e..2080591 100644
  #ifndef __EMSCRIPTEN__
      wgpuSurfacePresent(g_surface);
  #endif
-@@ -1843,6 +2455,18 @@ bool present(const DisplaySource &src) {
+@@ -1843,6 +2465,18 @@ bool present(const DisplaySource &src) {
      return true;
  }
  
@@ -3608,7 +3648,7 @@ index 5a13c3e..2080591 100644
  double busy_ms() {
      if (!g_measured) return 0.0;
      return static_cast<double>(g_measured_ns) / static_cast<double>(g_measured) * static_cast<double>(g_total_passes) / 1e6;
-@@ -1932,3 +2556,29 @@ bool display(const DisplaySource &src, std::vector<std::uint32_t> &rgba, std::ui
+@@ -1932,3 +2566,29 @@ bool display(const DisplaySource &src, std::vector<std::uint32_t> &rgba, std::ui
  }
  
  }
@@ -3741,10 +3781,10 @@ index ac7b52e..8c910f3 100644
          case 0x01u {
              let l32 = Loc(l.word, 0u, 0xFFFFFFFFu);
 diff --git a/runtime/src/gs/gs.cpp b/runtime/src/gs/gs.cpp
-index a9c2be0..f175243 100644
+index a9c2be0..91f45c4 100644
 --- a/runtime/src/gs/gs.cpp
 +++ b/runtime/src/gs/gs.cpp
-@@ -660,15 +660,69 @@ void vblank() {
+@@ -660,16 +660,119 @@ void vblank() {
  
  }
  
@@ -3764,6 +3804,47 @@ index a9c2be0..f175243 100644
 +    for (const std::uint32_t t : g_targets)
 +        if (t == block) return true;
 +    return false;
++}
++
++// A banner in widescreen: a short band of tiles of one texture, drawn across the 4:3 width (the pause
++// menu's ornament). Narrowed, it would stop short of the 16:9 edges, so the sprite at each end is
++// carried on to the edge by mirrored copies of itself, each reflected about the last one's outer edge:
++// seamless, and the banners are mirror-tiled patterns already. A band is told apart by its tiles: the
++// same texture and rows, already spanning 3/4 of the width when its end tile comes, and at most a third
++// of the screen tall, so a full-screen picture drawn in strips is never extended.
++Vertex g_band_copies[8][2];
++int g_band_count = 0;
++struct Band {
++    std::uint64_t frame = ~0ull;
++    std::int32_t y0 = 0, y1 = 0, lo = 0, hi = 0;
++    std::uint32_t tbp = 0;
++} g_band;
++
++void extend_band(const State &s, const Context &x, const Vertex (&out)[3], std::int32_t lo, std::int32_t hi, std::int32_t centre, std::int32_t width) {
++    const std::int32_t y0 = std::min<std::int32_t>(s.queue[0].y, s.queue[1].y), y1 = std::max<std::int32_t>(s.queue[0].y, s.queue[1].y);
++    const std::uint32_t tbp = static_cast<std::uint32_t>(x.tex0) & 0x3FFFu;
++    if (g_band.frame != frame_count() || g_band.y0 != y0 || g_band.y1 != y1 || g_band.tbp != tbp) {
++        g_band = Band{frame_count(), y0, y1, lo, hi, tbp};
++    } else {
++        g_band.lo = std::min(g_band.lo, lo);
++        g_band.hi = std::max(g_band.hi, hi);
++    }
++    const std::int32_t height = ((static_cast<std::int32_t>(x.scissor >> 48) & 0x7FF) - (static_cast<std::int32_t>(x.scissor >> 32) & 0x7FF) + 1) * 16;
++    if ((y1 - y0) * 3 > height || (g_band.hi - g_band.lo) * 4 < width * 3) return;
++    const std::int32_t left = centre - width / 2, right = centre + width / 2;
++    for (const int side : {-1, 1}) {
++        if (side < 0 ? lo > left + 16 : hi < right - 16) continue;
++        Vertex copy[2] = {out[0], out[1]};
++        for (int n = 0; n < 8 && g_band_count < 8; ++n) {
++            const std::int32_t a = static_cast<std::int32_t>(copy[0].x), b = static_cast<std::int32_t>(copy[1].x);
++            const std::int32_t edge = side < 0 ? std::min(a, b) : std::max(a, b);
++            if (side < 0 ? edge <= left : edge >= right) break;
++            for (Vertex &v : copy) v.x = static_cast<std::uint32_t>(std::clamp(2 * edge - static_cast<std::int32_t>(v.x), 0, 0xFFFF));
++            g_band_copies[g_band_count][0] = copy[0];
++            g_band_copies[g_band_count][1] = copy[1];
++            ++g_band_count;
++        }
++    }
 +}
 +
 +// A primitive of the game's 2D layer in widescreen: its x positions pulled towards the centre of
@@ -3794,6 +3875,7 @@ index a9c2be0..f175243 100644
 +        out[i] = s.queue[i];
 +        out[i].x = static_cast<std::uint32_t>(std::clamp(centre + (static_cast<std::int32_t>(s.queue[i].x) - centre) * 3 / 4, 0, 0xFFFF));
 +    }
++    if ((prim & 7u) == 6 && textured) extend_band(s, x, out, lo, hi, centre, width);
 +    return out;
 +}
 +
@@ -3808,15 +3890,23 @@ index a9c2be0..f175243 100644
 -        if (cpu_raster()) raster::draw(s, s.queue, needed);
 +        note_target(s.ctx[((((s.prmodecont & 1u) ? s.prim : s.prmode) >> 9) & 1u)]);
 +        Vertex narrowed[3];
++        g_band_count = 0;
 +        const Vertex *v = g_widescreen_2d ? narrow_2d(s, needed, narrowed) : s.queue;
 +        if (cpu_raster()) raster::draw(s, v, needed);
++#ifdef PS2_GPU
++        if (gpu_on()) gpu::draw(s, v, needed);
++#endif
++        for (int i = 0; i < g_band_count; ++i) {
++            if (cpu_raster()) raster::draw(s, g_band_copies[i], 2);
  #ifdef PS2_GPU
 -        if (gpu_on()) gpu::draw(s, s.queue, needed);
-+        if (gpu_on()) gpu::draw(s, v, needed);
++            if (gpu_on()) gpu::draw(s, g_band_copies[i], 2);
  #endif
++        }
          capture::prim(s, needed);
          ++g_primitives;
-@@ -1058,6 +1112,14 @@ void resize_window(std::uint32_t width, std::uint32_t height) {
+     }
+@@ -1058,6 +1161,14 @@ void resize_window(std::uint32_t width, std::uint32_t height) {
  #endif
  }
  
