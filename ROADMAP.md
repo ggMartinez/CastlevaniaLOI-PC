@@ -19,7 +19,7 @@ Each part's percentage is an estimate of how much of the way to its native goal 
 | 2 | [Controller](#2-controller) | SIO2, PADMAN.IRX | Done | 100% |
 | 3 | [Disc drive](#3-disc-drive) | CDVD | Done | 100% |
 | 4 | [Movies](#4-movies) | IPU, `.PSS` files | To do | 0% |
-| 5 | [Kernel threads](#5-kernel-threads) | EE kernel | Later | 80% |
+| 5 | [Kernel threads](#5-kernel-threads) | EE kernel | Done | 100% |
 | 6 | [Sound](#6-sound) | SPU2, IOP | Done | 100% |
 | 7 | [VU0 microprograms](#7-vu0-microprograms) | VU0 | Done | 100% |
 | 8 | [Rendering](#8-rendering) | GS, VIF/GIF, VU1 output | To do | 0% |
@@ -85,10 +85,17 @@ compiled into `game.dll` on the player's PC.
 
 ## 5. Kernel threads
 
-**Later, 80%.**
+**Done, 100%.**
 
-- **Today:** system calls (threads, semaphores, interrupts) are reimplemented in native code, not run.
-- **Notes:** little to gain: the scheduler is already lightweight native code.
+- **Today:** the PS2's kernel never runs. Every system call the game makes (threads, semaphores,
+  event flags, interrupt handlers, alarms, DMA) is the runtime's own C++ (`runtime/src/kernel.cpp`),
+  doing what the PS2's kernel did.
+- **Native goal, and why it is reached:** the game's threads stay PS2 threads, switched on one host
+  thread by the PS2 kernel's rules (the highest-priority ready thread runs; a switch happens only at a
+  system call or an interrupt), and interrupts (vblank, DMA, timers) arrive on emulated time and run
+  the game's own handlers. The game's code relies on those rules, so mapping its threads onto Windows
+  threads would make it less faithful, not more native: locks everywhere, and no determinism, which
+  save states also depend on.
 
 ## 6. Sound
 
