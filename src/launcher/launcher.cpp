@@ -96,6 +96,48 @@ std::string export_card(const Paths &paths) {
     return "Exported to " + utf8(picked) + ".";
 }
 
+// The executable everything is built for: game.dll is linked against it by name.
+constexpr const wchar_t *kMainExe = L"CastlevaniaLoI.exe";
+
+fs::path own_exe() {
+    wchar_t exe[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    return fs::path(std::wstring(exe, n));
+}
+
+bool running_main_exe() { return _wcsicmp(own_exe().filename().c_str(), kMainExe) == 0; }
+
+bool start_main_exe(const std::wstring &args) {
+    const fs::path main = own_exe().parent_path() / kMainExe;
+    std::wstring cmd = L"\"" + main.wstring() + L"\" " + args;
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(main.wstring().c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, main.parent_path().wstring().c_str(), &si, &pi)) {
+        MessageBoxW(nullptr, (L"Could not start " + main.wstring()).c_str(), L"Launcher", MB_ICONERROR);
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
+// Fits the window's height to its contents (within the screen), keeping the width the player chose.
+void fit_height(SDL_Window *window, float content) {
+    if (SDL_GetWindowFlags(window) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MINIMIZED)) return;
+    int w = 0, h = 0;
+    SDL_GetWindowSize(window, &w, &h);
+    int want = static_cast<int>(content + 0.99f);
+    SDL_Rect usable{};
+    if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(window), &usable) == 0) {
+        int top = 0;
+        SDL_GetWindowBordersSize(window, &top, nullptr, nullptr, nullptr);
+        want = std::min(want, usable.h - top);
+    }
+    want = std::max(want, 120);
+    if (std::abs(want - h) > 1) SDL_SetWindowSize(window, w, want);
+}
+
 // Starts this executable again in game mode with the player's settings.
 bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
     wchar_t exe[MAX_PATH];
@@ -145,6 +187,9 @@ bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
 }  // namespace
 
 int run() {
+    // The play-directly copy the build leaves beside this executable: it starts the game through the
+    // real one (the game's code is linked against that name).
+    if (!running_main_exe()) return start_main_exe(L"--play") ? 0 : 1;
     const Paths paths = Paths::from_exe();
     GameConfig config;
     std::string config_error;
@@ -261,7 +306,7 @@ int run() {
                 ImGui::TextUnformatted(progress.status().c_str());
                 ImGui::ProgressBar(progress.fraction.load(), ImVec2(-1, 0));
                 const auto lines = progress.lines();
-                ImGui::BeginChild("##log", ImVec2(-1, ImGui::GetContentRegionAvail().y - 50), ImGuiChildFlags_Borders);
+                ImGui::BeginChild("##log", ImVec2(-1, 260), ImGuiChildFlags_Borders);
                 for (const auto &l : lines) ImGui::TextUnformatted(l.c_str());
                 if (busy) ImGui::SetScrollHereY(1.0f);
                 ImGui::EndChild();
@@ -313,12 +358,15 @@ int run() {
                                                         : "No card yet: the game makes one when it first saves.");
             }
         }
+        // The height everything above takes, to fit the window to it.
+        const float content = ImGui::GetCursorPosY() + ImGui::GetScrollY() - style.ItemSpacing.y + style.WindowPadding.y;
         ImGui::End();
         ImGui::Render();
         SDL_SetRenderDrawColor(renderer, 12, 10, 14, 255);
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
+        fit_height(window, content);
     }
     if (worker) {
         progress.cancel = true;
@@ -333,6 +381,19 @@ int run() {
     SDL_Quit();
     (void)launched;
     return 0;
+}
+
+int play_now() {
+    const Paths paths = Paths::from_exe();
+    GameConfig config;
+    std::string error;
+    if (!GameConfig::load(paths.compiler / "config" / "game.txt", config, error)) return run();
+    std::string data_message;
+    if (!is_built(paths, config) || !check_data(paths, config, data_message)) return run();  // build it first
+    const Settings settings = Settings::load(paths);
+    if (play(paths, config, settings)) return 0;
+    MessageBoxA(nullptr, "Could not start the game.", config.get("title").c_str(), MB_ICONERROR);
+    return run();
 }
 
 int build_cli(const std::string &iso) {

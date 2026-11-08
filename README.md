@@ -57,6 +57,10 @@ The launcher identifies the disc by its boot executable (`SLUS_207.33`, SHA-1
 
    With every effect off, the picture is exactly what it was without them.
 
+6. From then on you can skip the launcher: the build also makes **`Castlevania - Lament of Innocence.exe`**
+   beside `CastlevaniaLoI.exe`, which starts the game straight away with your settings (pin it, or make a
+   shortcut to it). Run `CastlevaniaLoI.exe` to change the settings outside the game or to build again.
+
 **Widescreen** is real 16:9: the 3D view gets wider instead of stretched (PCSX2's widescreen
 patch by arapapa, with nemesis2000's fix that keeps movies 4:3). The menus, text and the game's
 2D pictures (logos, the title) keep their 4:3 shape, centred; the in-game HUD keeps its shape too
@@ -111,6 +115,7 @@ Everything stays in the extracted folder:
 | `saves\memcard1.ps2` | The memory card, in PCSX2's `.ps2` format: the launcher's **Import from PCSX2...** and **Export...** bring a card in from PCSX2 (keeping the current one as `saves\memcard1-<date>.ps2`) or copy it out |
 | `savestates\quick.state` | The F5 quick save |
 | `logs\build.log`, `logs\game.log` | The game build's log and the game's own log |
+| `Castlevania - Lament of Innocence.exe` | Starts the game right away, without the launcher (made by the build) |
 | `settings.ini` | The launcher's settings |
 | `game\data\` | The game's files, copied off your disc image by the build (about 2.9 GB): the game reads its data from these |
 | `game\`, `game.dll` | What the launcher built from your disc. Delete them to build again (from the disc image, as `game\data\` goes too) |

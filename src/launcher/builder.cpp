@@ -559,6 +559,20 @@ bool build(const Paths &paths, const GameConfig &config, const std::string &iso,
     stamp.close();
     fs::remove_all(paths.game / "obj", ec);
     progress.fraction = 1.0f;
+    // A copy of this executable named after the game, beside it: started, it plays right away (launcher.cpp).
+    {
+        wchar_t exe[MAX_PATH];
+        const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        std::string name = config.get("title");
+        for (std::size_t at; (at = name.find(": ")) != std::string::npos;) name.replace(at, 2, " - ");
+        for (char &ch : name)
+            if (std::strchr("<>:\"/\\|?*", ch)) ch = '-';
+        const fs::path copy = paths.root / fs::path(name + ".exe");  // the title is plain ASCII
+        if (!fs::copy_file(fs::path(std::wstring(exe, n)), copy, fs::copy_options::overwrite_existing, ec))
+            progress.line("Could not make " + copy.filename().string() + ": " + ec.message());
+        else
+            progress.line("Made " + copy.filename().string() + ": it starts the game right away");
+    }
     progress.status("Ready to play");
     progress.done = true;
     progress.running = false;
