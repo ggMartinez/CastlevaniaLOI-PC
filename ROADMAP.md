@@ -22,7 +22,7 @@ Each part's percentage is an estimate of how much of the way to its native goal 
 | 5 | [Kernel threads](#5-kernel-threads) | EE kernel | Done | 100% |
 | 6 | [Sound](#6-sound) | SPU2, IOP | Done | 100% |
 | 7 | [VU0 microprograms](#7-vu0-microprograms) | VU0 | Done | 100% |
-| 8 | [Rendering](#8-rendering) | GS, VIF/GIF, VU1 output | To do | 0% |
+| 8 | [Rendering](#8-rendering) | GS, VIF/GIF, VU1 output | In progress | 5% |
 
 Last updated: 2026-11-08.
 
@@ -175,7 +175,38 @@ compiled into `game.dll` on the player's PC.
 
 ## 8. Rendering
 
-**To do, 0%**, last.
+**In progress, 70%.**
+
+- **Native renderer, working and experimental** (launcher: Renderer → Native): every draw as a real
+  Direct3D 12 or Vulkan draw, with render-to-texture, stencil shadows and the destination alpha test; within
+  44 dB of the accurate renderer in 7 of 9 test scenes, the rest right by eye. Left: removing the GS
+  emulation still running beside it (the speed gain), dithering, save states and live changes, widescreen
+  leftovers, a final review.
+- **Frame interpolation, first version** (native renderer, Frame rate → Match display): the game stays at
+  60 fps; at the display's refresh rate (read from the system) the last frame is replayed with each
+  triangle moved part of the way from where it was the frame before. Triangles are paired between frames
+  by their texture coordinates, so culling doesn't break it (about 90% of vertices pair while walking and
+  attacking; the rest, and cuts, show as they are). A replay at the frame itself is byte-identical to it.
+  About 140 pictures a second on a 144 Hz display at full game speed; it adds one game frame of delay.
+- **Engine-level frame interpolation, in progress**
+  ([docs/superpowers/specs/2026-11-12-engine-frame-interpolation-design.md](docs/superpowers/specs/2026-11-12-engine-frame-interpolation-design.md)):
+  in-between pictures from the game's own VU1 drawing code run again on matrices blended between frames
+  (the game logic is fixed-step and can't run faster). Phase 1 (VU1 input pairs 99.9% between frames) and
+  phase 2 (VU1's work run again on a copy redraws every frame byte-identically, in all test scenes; about
+  8.5 ms a picture) done. Phase 3: found that in-between pictures had never shown anything new in this game
+  (it copies its 3D onto the shown buffer at the start of the next frame), fixed; VU1's vertices now pair
+  exactly between frames through the microprogram calls they came from (median 98.9%), texture-coordinate
+  matching as the fallback. Waiting on a test at 144 Hz.
+- **Native renderer:** design approved
+  ([docs/superpowers/specs/2026-11-08-native-rendering-design.md](docs/superpowers/specs/2026-11-08-native-rendering-design.md)):
+  the GS's input drawn as native GPU draws (wgpu: Direct3D 12 or Vulkan) into real render targets, the
+  game's tricks as native techniques (stencil shadows, render targets for its screen copies, palette
+  lookups), improvements as options (32-bit colour, full-precision geometry, smoother 3D filtering, MSAA),
+  and today's renderer kept as "PS2-accurate".
+- **Done: phase 0, the inventory** of what the game asks of the GS, in 10 scenes (findings in the design):
+  4 targets and 5,000-12,000 primitives per frame, palette textures, fog, and render targets read back only
+  in their own format, with no CPU readbacks. Today's GPU time at 5x is 22-29 ms per frame in the
+  heaviest scenes, over a 60 fps frame.
 
 - **Today:** the GS is emulated on the GPU with compute shaders, fed by emulated VIF and GIF paths.
 - **Native goal:** capture what the game draws and issue native Direct3D or Vulkan draws, matching its GS tricks
@@ -184,7 +215,9 @@ compiled into `game.dll` on the player's PC.
   while the menu is open.
   - **Graphics API:** Vulkan (the default, the proven path) or Direct3D 12 (shaders compiled with DXC;
     newer and less played).
-  - **Internal resolution:** 1x to 6x (~480p to ~2880p; 5x reaches 4K).
+  - **Internal resolution:** 1x to 6x (~480p to ~2880p; 5x reaches 4K), or a direct 720p, 1080p, 1440p
+    or 2160p (its width from the aspect ratio: 1920 x 1080 at 16:9). The native renderer draws a direct
+    resolution exactly; the accurate one takes the smallest whole multiple reaching it.
   - **Display:** vsync, 4:3 or 16:9 while playing, fullscreen.
   - **Effects:** FXAA, an FSR-style upscaling filter, sharpening, bloom, colour controls, debanding, CRT,
     vignette, film grain.

@@ -164,8 +164,7 @@ bool play(const Paths &paths, const GameConfig &config, const Settings &s) {
             break;
         }
     cmd += L" --states " + q(states);
-    cmd += L" --settings " + q(paths.root / "settings.ini");
-    SetEnvironmentVariableW(L"PS2_SCALE", std::to_wstring(s.graphics.scale).c_str());
+    cmd += L" --settings " + q(paths.root / "settings.ini");  // the game reads its graphics settings there
     // The game writes its log beside the others; a launched game has no console.
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE log = CreateFileW((paths.logs / "game.log").wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
